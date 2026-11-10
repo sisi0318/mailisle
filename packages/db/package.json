@@ -1,0 +1,12 @@
+{
+  "name": "@mail/db",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@mail/shared": "workspace:*",
+    "better-sqlite3": "^12.0.0",
+    "drizzle-orm": "^0.44.0"
+  },
+  "devDependencies": { "@types/better-sqlite3": "^7.6.0" }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@mail/server",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@mail/core": "workspace:*",
+    "@mail/db": "workspace:*",
+    "@mail/shared": "workspace:*",
+    "@hono/node-server": "^1.19.0",
+    "hono": "^4.9.0",
+    "better-sqlite3": "^12.0.0",
+    "drizzle-orm": "^0.44.0",
+    "imapflow": "^1.0.195",
+    "nodemailer": "^7.0.0",
+    "postal-mime": "^2.4.0",
+    "socks": "^2.8.0",
+    "zod": "^4.1.0",
+    "html-to-text": "^9.0.5"
+  }
+}

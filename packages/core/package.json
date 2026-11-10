@@ -1,0 +1,16 @@
+{
+  "name": "@mail/core",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@mail/shared": "workspace:*",
+    "@mail/db": "workspace:*",
+    "imapflow": "^1.0.195",
+    "nodemailer": "^7.0.0",
+    "postal-mime": "^2.4.0",
+    "socks": "^2.8.0",
+    "html-to-text": "^9.0.5"
+  },
+  "devDependencies": { "@types/nodemailer": "^7.0.0", "@types/html-to-text": "^9.0.4" }
+}

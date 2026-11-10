@@ -1,0 +1,23 @@
+{
+  "name": "mail",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.14.0",
+  "engines": { "node": ">=22.12" },
+  "scripts": {
+    "dev": "tsx watch apps/server/src/index.ts --dev",
+    "dev:web": "pnpm --filter @mail/web dev",
+    "build": "pnpm --filter @mail/web build && tsup --config apps/server/tsup.config.ts",
+    "start": "node apps/server/dist/index.js",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}
