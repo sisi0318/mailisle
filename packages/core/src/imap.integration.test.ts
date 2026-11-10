@@ -1,9 +1,9 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { ImapFlow } from 'imapflow';
 import MailComposer from 'nodemailer/lib/mail-composer/index.js';
-import { listSchema, type Folder } from '@mail/shared';
+import { listSchema, type Folder, type MailFlags, type MailMetadata } from '@mail/shared';
 import { MailStore } from '@mail/db';
 import { accountConfig, migrations } from '../../../tests/fixtures';
 import { ImapAdapter } from './imap';
@@ -128,5 +128,88 @@ describe('real GreenMail IMAP / SMTP round trip', () => {
       try { expect(await direct.search({ header: { subject } }, { uid: true })).toEqual([]); }
       finally { lock.release(); }
     } finally { await adapter.close(); }
+  });
+
+  it('fetches envelopes only for unknown UIDs and uses flags-only fetches for existing mail', async () => {
+    await service.sync(accountId);
+    const path = `${unique}-incremental`;
+    await direct.mailboxCreate(path);
+    const raw = await new MailComposer({ from: config.email, to: config.email, subject: '增量测试', text: '正文' }).compile().build();
+    await direct.append(path, raw);
+    await direct.append(path, raw);
+    const adapter = new ImapAdapter(config);
+    let folder: Folder = { id: path, accountId, path, name: path, role: 'other', uidValidity: '', uidNext: 1, modseq: null };
+    const messages: MailMetadata[] = [];
+    const flags: MailFlags[] = [];
+    const sink = { knownUids: [] as number[], begin: () => {}, messages: (batch: MailMetadata[]) => { messages.push(...batch); }, flags: (batch: MailFlags[]) => { flags.push(...batch); } };
+    try {
+      await adapter.connect();
+      const initial = await adapter.sync(folder, sink);
+      expect(initial.cursor.modseq).toBeNull(); // GreenMail exercises the non-CONDSTORE path.
+      folder = { ...folder, ...initial.cursor };
+      sink.knownUids = initial.uids;
+      messages.length = 0;
+      await adapter.flags(folder, initial.uids[0], { seen: true });
+      await direct.append(path, raw);
+      const fetched = vi.spyOn(ImapFlow.prototype, 'fetchAll');
+      try {
+        const next = await adapter.sync(folder, sink);
+        expect(messages).toHaveLength(1);
+        expect(initial.uids).not.toContain(messages[0].uid);
+        expect(flags.find(item => item.uid === initial.uids[0])?.flags).toContain('\\Seen');
+        const envelopeCalls = fetched.mock.calls.filter(([, query]) => query.envelope);
+        expect(envelopeCalls).toHaveLength(1);
+        expect(envelopeCalls[0][0]).toEqual([messages[0].uid]);
+        expect(fetched.mock.calls.find(([, query]) => !query.envelope)?.[1]).toEqual({ uid: true, flags: true });
+
+        // An older UID may become visible after changing the provider's client sync range.
+        messages.length = 0;
+        sink.knownUids = next.uids.filter(uid => uid !== initial.uids[0]);
+        await adapter.sync({ ...folder, ...next.cursor }, sink);
+        expect(messages.map(item => item.uid)).toEqual([initial.uids[0]]);
+      } finally { fetched.mockRestore(); }
+
+      const connect = vi.spyOn(ImapFlow.prototype, 'connect');
+      try {
+        await adapter.connect();
+        await adapter.source(folder, initial.uids[0]);
+        expect(connect).not.toHaveBeenCalled();
+        await adapter.close();
+        await adapter.connect();
+        await adapter.source(folder, initial.uids[0]);
+        expect(connect).toHaveBeenCalledOnce();
+      } finally { connect.mockRestore(); }
+    } finally { await adapter.close(); await direct.mailboxDelete(path); }
+  });
+
+  it('lets a queued flag command run between two metadata batches on the same connection', async () => {
+    await service.sync(accountId);
+    const path = `${unique}-batches`;
+    await direct.mailboxCreate(path);
+    const raw = await new MailComposer({ from: config.email, to: config.email, subject: '分批测试', text: '正文' }).compile().build();
+    for (let i = 0; i < 201; i++) await direct.append(path, raw);
+    const adapter = new ImapAdapter(config);
+    const folder: Folder = { id: path, accountId, path, name: path, role: 'other', uidValidity: '', uidNext: 1, modseq: null };
+    let flagRequest: Promise<void> | undefined;
+    let firstUid = 0;
+    await adapter.connect();
+    const fetched = vi.spyOn(ImapFlow.prototype, 'fetchAll');
+    const flagged = vi.spyOn(ImapFlow.prototype, 'messageFlagsAdd');
+    try {
+      const result = await adapter.sync(folder, {
+        knownUids: [], begin: validity => { folder.uidValidity = validity; }, flags: () => {},
+        messages: records => {
+          if (!flagRequest) {
+            firstUid = records[0].uid;
+            flagRequest = adapter.flags(folder, firstUid, { seen: true });
+          }
+        },
+      });
+      await flagRequest;
+      expect(result.uids).toHaveLength(201);
+      expect(fetched).toHaveBeenCalledTimes(2);
+      expect(flagged.mock.invocationCallOrder[0]).toBeGreaterThan(fetched.mock.invocationCallOrder[0]);
+      expect(flagged.mock.invocationCallOrder[0]).toBeLessThan(fetched.mock.invocationCallOrder[1]);
+    } finally { fetched.mockRestore(); flagged.mockRestore(); await adapter.close(); await direct.mailboxDelete(path); }
   });
 });

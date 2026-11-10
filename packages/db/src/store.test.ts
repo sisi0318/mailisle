@@ -86,4 +86,54 @@ describe('SQLite mail store', () => {
     store.deleteAccount(second.accountId);
     expect(store.list(listSchema.parse({ q: '发票' })).total).toBe(2);
   });
+
+  it('updates only changed flags without rewriting metadata or the search index', () => {
+    const { inbox } = seedAccount(store);
+    store.applyBatch(inbox, [record(1, { flags: ['\\Answered'] })]);
+    const message = store.list(query()).messages[0];
+    store.cacheBody(message.id, '离线合同正文');
+    const indexBefore = store.sqlite.prepare('SELECT rowid, * FROM message_search').all();
+    expect(store.applyFlags(inbox.id, [{ uid: 1, flags: ['\\Seen', '\\Answered'] }])).toBe(1);
+    expect(store.applyFlags(inbox.id, [{ uid: 1, flags: ['\\Answered', '\\Seen'] }])).toBe(0);
+    expect(store.message(message.id)).toMatchObject({ seen: true, cached: true, preview: '离线合同正文' });
+    expect(store.sqlite.prepare('SELECT rowid, * FROM message_search').all()).toEqual(indexBefore);
+    store.patchFlags(inbox.id, 1, { seen: false, starred: true });
+    expect(store.messageLocations(message.id)[0].flags).toEqual(['\\Answered', '\\Flagged']);
+  });
+
+  it('keeps message identity, body cache and search index when a move returns UIDPLUS mapping', () => {
+    const { inbox, sent } = seedAccount(store);
+    store.applyBatch(inbox, [record()]);
+    const message = store.list(query()).messages[0];
+    store.cacheBody(message.id, '移动后仍可离线读取');
+    expect(store.moveLocation(inbox.id, 1, sent, { uid: 9, uidValidity: '1' })).toBe(true);
+    // The destination scan started before the move allocated UID 9.
+    store.finishFolder(sent.id, { uidValidity: '1', uidNext: 2, modseq: null }, []);
+    expect(store.list(query()).total).toBe(0);
+    expect(store.messageLocations(message.id)).toMatchObject([{ uid: 9, folder: { id: sent.id } }]);
+    store.applyBatch(sent, [record(9, { messageId: '<1@example.com>' })]);
+    expect(store.list(query('', 'all')).total).toBe(1);
+    expect(store.message(message.id)).toMatchObject({ cached: true, preview: '移动后仍可离线读取', threadId: message.threadId });
+    expect(store.list(query('离线')).total).toBe(1);
+  });
+
+  it('removes a moved source immediately when UID mapping is unavailable', () => {
+    const { inbox, sent } = seedAccount(store);
+    store.applyBatch(inbox, [record()]);
+    expect(store.moveLocation(inbox.id, 1, sent, {})).toBe(false);
+    expect(store.list(query()).total).toBe(0);
+    expect(store.sqlite.prepare('SELECT count(*) AS n FROM message_search').get()).toEqual({ n: 0 });
+  });
+
+  it('looks up thread anchors and search row IDs through indexes', () => {
+    const { inbox, accountId } = seedAccount(store);
+    store.applyBatch(inbox, [record()]);
+    const anchorPlan = store.sqlite.prepare('EXPLAIN QUERY PLAN SELECT thread_id FROM thread_keys WHERE account_id = ? AND reference IN (?)').all(accountId, '<1@example.com>') as { detail: string }[];
+    expect(anchorPlan.some(row => /SEARCH.*INDEX/.test(row.detail))).toBe(true);
+    const searchPlan = store.sqlite.prepare('EXPLAIN QUERY PLAN SELECT * FROM message_search WHERE rowid = ?').all(1) as { detail: string }[];
+    expect(searchPlan.some(row => row.detail.includes('INDEX 0:='))).toBe(true);
+    store.deleteAccount(accountId);
+    expect(store.sqlite.prepare('SELECT count(*) AS n FROM thread_keys').get()).toEqual({ n: 0 });
+    expect(store.sqlite.prepare('SELECT count(*) AS n FROM message_search_rows').get()).toEqual({ n: 0 });
+  });
 });

@@ -28,3 +28,13 @@ export const locations = sqliteTable('locations', {
   uid: integer('uid').notNull(), messageId: text('message_id').notNull().references(() => messages.id, { onDelete: 'cascade' }),
   flags: text('flags', { mode: 'json' }).$type<string[]>().notNull(),
 }, table => [primaryKey({ columns: [table.folderId, table.uid] }), index('locations_message').on(table.messageId)]);
+
+export const threadKeys = sqliteTable('thread_keys', {
+  accountId: text('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  reference: text('reference').notNull(), threadId: text('thread_id').notNull(),
+}, table => [primaryKey({ columns: [table.accountId, table.reference] }), index('thread_keys_thread').on(table.threadId)]);
+
+export const messageSearchRows = sqliteTable('message_search_rows', {
+  id: integer('id').primaryKey(),
+  messageId: text('message_id').notNull().unique().references(() => messages.id, { onDelete: 'cascade' }),
+});

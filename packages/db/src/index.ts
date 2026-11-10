@@ -1,10 +1,10 @@
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, lt, sql } from 'drizzle-orm';
 import { mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Account, Cursor, Folder, FolderRole, ListInput, MailMetadata, Message, MessagePage } from '@mail/shared';
+import type { Account, Cursor, FlagUpdate, Folder, FolderRole, ListInput, MailFlags, MailMetadata, Message, MessagePage, MoveReceipt } from '@mail/shared';
 import * as schema from './schema';
 import { searchExpression, tokenize } from './search';
 
@@ -51,6 +51,9 @@ export class MailStore {
     return this.db.select().from(schema.folders).where(accountId ? eq(schema.folders.accountId, accountId) : undefined).all();
   }
   folder(id: string) { return this.db.select().from(schema.folders).where(eq(schema.folders.id, id)).get(); }
+  folderUids(id: string): number[] {
+    return this.db.select({ uid: schema.locations.uid }).from(schema.locations).where(eq(schema.locations.folderId, id)).all().map(row => row.uid);
+  }
   saveFolders(accountId: string, folders: { path: string; name: string; role: FolderRole }[]) {
     this.sqlite.transaction(() => {
       for (const folder of folders) {
@@ -83,16 +86,58 @@ export class MailStore {
         const values = { id, accountId: folder.accountId, remoteKey, threadId, messageId: record.messageId,
           references: record.references, subject: record.subject, from: record.from, to: record.to, replyTo: record.replyTo, date: record.date };
         this.db.insert(schema.messages).values(values).onConflictDoUpdate({ target: schema.messages.id, set: values }).run();
-        this.db.insert(schema.locations).values({ folderId: folder.id, uid: record.uid, messageId: id, flags: record.flags })
-          .onConflictDoUpdate({ target: [schema.locations.folderId, schema.locations.uid], set: { messageId: id, flags: record.flags } }).run();
+        const flags = [...record.flags].sort();
+        this.db.insert(schema.locations).values({ folderId: folder.id, uid: record.uid, messageId: id, flags })
+          .onConflictDoUpdate({ target: [schema.locations.folderId, schema.locations.uid], set: { messageId: id, flags } }).run();
         this.indexMessage(id);
       }
+    })();
+  }
+  applyFlags(folderId: string, records: MailFlags[]) {
+    const update = this.sqlite.prepare('UPDATE locations SET flags = ? WHERE folder_id = ? AND uid = ? AND flags <> ?');
+    return this.sqlite.transaction(() => {
+      let changed = 0;
+      for (const record of records) {
+        const flags = JSON.stringify([...record.flags].sort());
+        changed += update.run(flags, folderId, record.uid, flags).changes;
+      }
+      return changed;
+    })();
+  }
+  patchFlags(folderId: string, uid: number, update: FlagUpdate) {
+    const location = this.db.select().from(schema.locations).where(and(eq(schema.locations.folderId, folderId), eq(schema.locations.uid, uid))).get();
+    if (!location) return;
+    const flags = new Set(location.flags);
+    for (const [key, flag] of [['seen', '\\Seen'], ['starred', '\\Flagged']] as const) {
+      if (update[key] === true) flags.add(flag);
+      if (update[key] === false) flags.delete(flag);
+    }
+    this.applyFlags(folderId, [{ uid, flags: [...flags] }]);
+  }
+  moveLocation(folderId: string, uid: number, target: Folder, receipt: MoveReceipt): boolean {
+    return this.sqlite.transaction(() => {
+      const location = this.db.select().from(schema.locations).where(and(eq(schema.locations.folderId, folderId), eq(schema.locations.uid, uid))).get();
+      if (!location) return false;
+      const mapped = receipt.uid !== undefined && receipt.uidValidity !== undefined;
+      if (mapped) {
+        this.beginFolder(target.id, receipt.uidValidity!);
+        this.db.insert(schema.locations).values({ folderId: target.id, uid: receipt.uid!, messageId: location.messageId, flags: location.flags })
+          .onConflictDoUpdate({ target: [schema.locations.folderId, schema.locations.uid], set: { messageId: location.messageId, flags: location.flags } }).run();
+        const message = this.db.select().from(schema.messages).where(eq(schema.messages.id, location.messageId)).get()!;
+        if (!message.remoteKey.startsWith('provider:')) {
+          this.db.update(schema.messages).set({ remoteKey: `${target.id}:${receipt.uidValidity}:${receipt.uid}` }).where(eq(schema.messages.id, message.id)).run();
+        }
+      }
+      this.db.delete(schema.locations).where(and(eq(schema.locations.folderId, folderId), eq(schema.locations.uid, uid))).run();
+      if (!mapped) this.sqlite.prepare('DELETE FROM messages WHERE id = ? AND NOT EXISTS (SELECT 1 FROM locations WHERE message_id = ?)').run(location.messageId, location.messageId);
+      return mapped;
     })();
   }
   finishFolder(folderId: string, cursor: Cursor, uids: number[]) {
     this.sqlite.transaction(() => {
       const present = new Set(uids);
-      const local = this.db.select().from(schema.locations).where(eq(schema.locations.folderId, folderId)).all();
+      // A move can add a destination UID between scan batches; the older snapshot cannot delete it.
+      const local = this.db.select({ uid: schema.locations.uid }).from(schema.locations).where(and(eq(schema.locations.folderId, folderId), lt(schema.locations.uid, cursor.uidNext))).all();
       for (const item of local) if (!present.has(item.uid)) {
         this.db.delete(schema.locations).where(and(eq(schema.locations.folderId, folderId), eq(schema.locations.uid, item.uid))).run();
       }
@@ -140,20 +185,25 @@ export class MailStore {
   private indexMessage(id: string) {
     const message = this.db.select().from(schema.messages).where(eq(schema.messages.id, id)).get()!;
     const content = tokenize([message.subject, ...message.from.map(a => `${a.name} ${a.address}`), ...message.to.map(a => `${a.name} ${a.address}`), message.bodyText].join(' '));
-    this.sqlite.prepare('DELETE FROM message_search WHERE id = ?').run(id);
-    this.sqlite.prepare('INSERT INTO message_search(id, content) VALUES (?, ?)').run(id, content);
+    const row = this.db.select().from(schema.messageSearchRows).where(eq(schema.messageSearchRows.messageId, id)).get();
+    const rowId = row?.id ?? Number(this.db.insert(schema.messageSearchRows).values({ messageId: id }).run().lastInsertRowid);
+    this.sqlite.prepare('INSERT OR REPLACE INTO message_search(rowid, id, content) VALUES (?, ?, ?)').run(rowId, id, content);
   }
   private resolveThread(accountId: string, message: MailMetadata, current?: string): string {
     if (message.providerThreadId) return `${accountId}:provider:${message.providerThreadId}`;
     const refs = [...new Set([message.messageId, ...message.references].filter(Boolean))];
     if (!refs.length) return current ?? randomUUID();
-    const related = this.db.select({ threadId: schema.messages.threadId }).from(schema.messages).where(and(
-      eq(schema.messages.accountId, accountId),
-      sql`(messages.message_id IN (${sql.join(refs.map(ref => sql`${ref}`), sql`,`)}) OR EXISTS (SELECT 1 FROM json_each(messages.refs) ref WHERE ref.value IN (${sql.join(refs.map(ref => sql`${ref}`), sql`,`)})))`,
+    const related = this.db.select({ threadId: schema.threadKeys.threadId }).from(schema.threadKeys).where(and(
+      eq(schema.threadKeys.accountId, accountId), inArray(schema.threadKeys.reference, refs),
     )).all();
     const threads = [...new Set([...related.map(row => row.threadId), ...(current ? [current] : [])])];
     const threadId = threads[0] ?? randomUUID();
-    if (threads.length > 1) this.db.update(schema.messages).set({ threadId }).where(inArray(schema.messages.threadId, threads)).run();
+    if (threads.length > 1) {
+      const merged = threads.filter(id => id !== threadId);
+      this.db.update(schema.messages).set({ threadId }).where(inArray(schema.messages.threadId, merged)).run();
+      this.db.update(schema.threadKeys).set({ threadId }).where(inArray(schema.threadKeys.threadId, merged)).run();
+    }
+    for (const reference of refs) this.db.insert(schema.threadKeys).values({ accountId, reference, threadId }).onConflictDoNothing().run();
     return threadId;
   }
   private toMessage(row: typeof schema.messages.$inferSelect): Message {

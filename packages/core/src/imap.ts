@@ -5,15 +5,26 @@ import type SMTPTransport from 'nodemailer/lib/smtp-transport/index.js';
 import * as socks from 'socks';
 import PostalMime from 'postal-mime';
 import type { AccountInput, Address, FlagUpdate, Folder, FolderRole, MailMetadata, SendInput } from '@mail/shared';
-import type { MailAdapter } from './adapter';
+import type { MailAdapter, SyncSink } from './adapter';
 
 export class ImapAdapter implements MailAdapter {
   private client: ImapFlow;
+  private connecting?: Promise<void>;
+  private connectionAttempted = false;
   constructor(private account: AccountInput) {
     this.client = this.newClient();
-    this.client.on('error', () => { /* Commands report connection errors to the caller. */ });
   }
-  async connect() { await this.client.connect(); }
+  async connect() {
+    if (this.connecting) return this.connecting;
+    if (this.client.usable) return;
+    if (this.connectionAttempted) {
+      this.client.close();
+      this.client = this.newClient();
+    }
+    this.connectionAttempted = true;
+    this.connecting = this.client.connect().then(() => {}).finally(() => { this.connecting = undefined; });
+    return this.connecting;
+  }
   async verifySmtp() {
     const transport = this.smtp();
     try { await transport.verify(); }
@@ -26,27 +37,47 @@ export class ImapAdapter implements MailAdapter {
       path: folder.path, name: folder.name, role: folderRole(folder.path, folder.specialUse),
     }));
   }
-  async sync(folder: Folder, begin: (validity: string) => void, batch: (records: MailMetadata[]) => void) {
+  async sync(folder: Folder, sink: SyncSink) {
     const lock = await this.client.getMailboxLock(folder.path);
+    let cursor;
+    let uids: number[];
     try {
       const mailbox = this.client.mailbox;
       if (!mailbox) throw new Error('无法打开文件夹');
       const uidValidity = mailbox.uidValidity.toString();
-      const cursor = { uidValidity, uidNext: mailbox.uidNext, modseq: mailbox.highestModseq?.toString() ?? null };
-      begin(uidValidity);
-      const uids = await this.client.search({ all: true }, { uid: true }) || [];
-      const incremental = folder.uidValidity === uidValidity && folder.modseq && mailbox.highestModseq;
-      // Fetching explicit UID sets avoids IMAP's surprising n:* behavior in empty ranges.
-      for (let i = 0; i < uids.length; i += 200) {
-        const fetched = await this.client.fetchAll(uids.slice(i, i + 200), {
+      cursor = { uidValidity, uidNext: mailbox.uidNext, modseq: mailbox.highestModseq?.toString() ?? null };
+      const result = await this.client.search({ all: true }, { uid: true });
+      if (result === false) throw new Error('邮件列表查询（SEARCH）未完成，已保留本地邮件索引，请稍后重试');
+      if (result.length === 0 && mailbox.exists > 0) throw new Error('邮件列表查询（SEARCH）返回空列表，但服务器仍报告有邮件；已保留本地邮件索引');
+      uids = result;
+      sink.begin(uidValidity);
+    } finally { lock.release(); }
+
+    // Membership, rather than UIDNEXT alone, also finds older UIDs exposed by a changed server sync range.
+    const known = new Set(folder.uidValidity === cursor.uidValidity ? sink.knownUids : []);
+    const added = uids.filter(uid => !known.has(uid));
+    const existing = uids.filter(uid => known.has(uid));
+    const currentFolder = { ...folder, uidValidity: cursor.uidValidity };
+    for (let i = 0; i < added.length; i += 200) {
+      const batchLock = await this.lockCurrent(currentFolder);
+      try {
+        const fetched = await this.client.fetchAll(added.slice(i, i + 200), {
           uid: true, envelope: true, flags: true, internalDate: true, threadId: true,
           headers: ['references', 'in-reply-to'],
-        }, { uid: true, ...(incremental ? { changedSince: BigInt(folder.modseq!) } : {}) });
+        }, { uid: true });
         const records = await Promise.all(fetched.map(metadata));
-        if (records.length) batch(records);
-      }
-      return { cursor, uids };
-    } finally { lock.release(); }
+        if (records.length) sink.messages(records);
+      } finally { batchLock.release(); }
+    }
+    const changedSince = folder.uidValidity === cursor.uidValidity && folder.modseq && cursor.modseq ? BigInt(folder.modseq) : undefined;
+    for (let i = 0; i < existing.length; i += 200) {
+      const batchLock = await this.lockCurrent(currentFolder);
+      try {
+        const fetched = await this.client.fetchAll(existing.slice(i, i + 200), { uid: true, flags: true }, { uid: true, changedSince });
+        sink.flags(fetched.map(message => ({ uid: message.uid, flags: [...(message.flags ?? [])] })));
+      } finally { batchLock.release(); }
+    }
+    return { cursor, uids };
   }
   async source(folder: Folder, uid: number) {
     const lock = await this.lockCurrent(folder);
@@ -61,14 +92,19 @@ export class ImapAdapter implements MailAdapter {
     try {
       for (const [key, flag] of [['seen', '\\Seen'], ['starred', '\\Flagged']] as const) {
         if (update[key] === undefined) continue;
-        if (update[key]) await this.client.messageFlagsAdd(uid, [flag], { uid: true });
-        else await this.client.messageFlagsRemove(uid, [flag], { uid: true });
+        const accepted = update[key] ? await this.client.messageFlagsAdd(uid, [flag], { uid: true })
+          : await this.client.messageFlagsRemove(uid, [flag], { uid: true });
+        if (!accepted) throw new Error('服务器未接受邮件标记变更');
       }
     } finally { lock.release(); }
   }
   async move(folder: Folder, uid: number, destination: string) {
     const lock = await this.lockCurrent(folder);
-    try { await this.client.messageMove(uid, destination, { uid: true }); }
+    try {
+      const result = await this.client.messageMove(uid, destination, { uid: true });
+      if (!result) throw new Error('服务器未接受邮件移动');
+      return { uid: result.uidMap?.get(uid), uidValidity: result.uidValidity?.toString() };
+    }
     finally { lock.release(); }
   }
   async send(input: SendInput, sentPath?: string) {
@@ -94,7 +130,7 @@ export class ImapAdapter implements MailAdapter {
     } finally { transport.close(); }
   }
   async watchInbox(onChange: () => void, onError: (error: Error) => void) {
-    const client = this.newClient();
+    const client = this.newClient(true);
     let stopped = false;
     client.on('error', onError);
     client.on('close', () => { if (!stopped) onError(new Error('收件箱监听连接已断开，将在轮询时重新连接')); });
@@ -116,15 +152,19 @@ export class ImapAdapter implements MailAdapter {
     }
     return lock;
   }
-  private newClient() {
+  private newClient(watch = false) {
     const server = this.account.imap;
-    return new ImapFlow({
+    const client = new ImapFlow({
       host: server.host, port: server.port, secure: server.security === 'tls',
       ...(server.security !== 'tls' ? { doSTARTTLS: server.security === 'starttls' } : {}),
       auth: { user: server.user, pass: server.password }, proxy: this.account.proxy,
       clientInfo: { name: 'Mail', version: '0.1.0', vendor: 'Mail' },
-      logger: false, maxIdleTime: 25 * 60_000, connectionTimeout: 20_000, greetingTimeout: 20_000,
+      logger: false, disableAutoIdle: !watch, maxIdleTime: 25 * 60_000, connectionTimeout: 20_000, greetingTimeout: 20_000,
+      // The worker must stay alive between 60-second polling cycles.
+      socketTimeout: watch ? undefined : 90_000,
     });
+    client.on('error', () => { /* Command promises report errors; the next operation reconnects. */ });
+    return client;
   }
   private smtp() {
     const server = this.account.smtp;

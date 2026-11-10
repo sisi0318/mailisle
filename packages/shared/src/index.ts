@@ -71,6 +71,8 @@ export type MailMetadata = {
   date: number;
   flags: string[];
 };
+export type MailFlags = Pick<MailMetadata, 'uid' | 'flags'>;
+export type MoveReceipt = { uid?: number; uidValidity?: string };
 export type Message = Omit<MailMetadata, 'uid' | 'remoteId' | 'providerThreadId' | 'flags'> & {
   id: string;
   accountId: string;
