@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Archive, Download, FolderInput, Forward, ImageOff, Mail, MailOpen, Reply, ReplyAll, Star, Trash2 } from 'lucide-react';
+import { ArrowLeft, Archive, Download, FolderInput, Forward, Image, ImageOff, Mail, MailOpen, Reply, ReplyAll, Star, Trash2 } from 'lucide-react';
 import type { Address, ComposeMode, Folder, FolderRole, Message, MessageBody } from '@mail/shared';
 import { api, json } from '../api';
 import { fileSize, folderList, fullDate, listDate, senderName } from '../format';
@@ -29,11 +29,13 @@ export function Reader({ message, folders, accountName, covering, onReply, compo
   const query = useQueryClient();
   const back = useRef<HTMLButtonElement>(null);
   const [expanded, setExpanded] = useState(false);
+  // Asked for per message: this component is created anew for each one, so the choice does not carry over.
+  const [showImages, setShowImages] = useState(false);
   const body = useQuery({ queryKey: ['body', message.id], queryFn: () => api<MessageBody>(`/messages/${message.id}/body`), retry: false });
   const thread = useQuery({ queryKey: ['thread', message.id], queryFn: () => api<Message[]>(`/messages/${message.id}/thread`) });
   const move = useMutation({ mutationFn: (folderId: string) => api(`/messages/${message.id}/move`, json('POST', { folderId })),
     onSuccess: () => { onMoved(); for (const key of ['messages', 'counts', 'thread']) void query.invalidateQueries({ queryKey: [key] }); } });
-  const rendered = useMemo(() => body.data?.html ? mailDocument(body.data.html, body.data.inlineImages) : null, [body.data?.html, body.data?.inlineImages]);
+  const rendered = useMemo(() => body.data?.html ? mailDocument(body.data.html, body.data.inlineImages, { remoteImages: showImages }) : null, [body.data?.html, body.data?.inlineImages, showImages]);
   // The list underneath cannot be reached while the reader covers it, so keyboard focus moves along.
   useEffect(() => { if (covering) back.current?.focus(); }, [covering]);
   const targets = folderList(folders.filter(folder => folder.accountId === message.accountId));
@@ -88,7 +90,11 @@ export function Reader({ message, folders, accountName, covering, onReply, compo
           <Download size={15} aria-hidden /><span>{attachment.filename}</span><small>{fileSize(attachment.size)}</small>
         </a>)}
       </div>}
-      {rendered && rendered.blockedImages > 0 && <p className="reader-note"><ImageOff size={14} aria-hidden />已屏蔽 {rendered.blockedImages} 张图片，发件人不会知道你读了这封信。</p>}
+      {rendered && (rendered.blockedImages > 0 || showImages) && <p className="reader-note">
+        {showImages ? <><Image size={14} aria-hidden />正在显示这封信里的网络图片，发件人可能会知道你打开了它。</>
+          : <><ImageOff size={14} aria-hidden />已屏蔽 {rendered.blockedImages} 张图片，发件人不会知道你读了这封信。</>}
+        {rendered.remoteImages > 0 && <button type="button" className="link-button" onClick={() => setShowImages(!showImages)}>{showImages ? '重新屏蔽' : '显示图片'}</button>}
+      </p>}
     </header>
 
     <div className="reader-body">

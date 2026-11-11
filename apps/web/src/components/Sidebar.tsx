@@ -1,6 +1,7 @@
-import { Archive, Ban, FileText, Folder as FolderIcon, Inbox, LogOut, Mail, Plus, RefreshCw, Send, Settings, SquarePen, Star, Trash2, X, type LucideIcon } from 'lucide-react';
+import { Archive, Ban, FileText, Folder as FolderIcon, Inbox, LogOut, Mail, Monitor, Moon, Plus, RefreshCw, Send, Settings, SquarePen, Star, Sun, Trash2, X, type LucideIcon } from 'lucide-react';
 import type { Account, Folder, FolderRole, UnreadCounts } from '@mail/shared';
 import { accountColor, folderList } from '../format';
+import { setTheme, useTheme, type Theme } from '../theme';
 import { Button } from './ui';
 
 export type Filter = { view: 'inbox' | 'all' | 'starred' | 'drafts'; accountId?: string; folderId?: string };
@@ -30,11 +31,16 @@ const views = [
   { view: 'drafts', label: '本地草稿', Icon: FileText },
 ] as const;
 
+const themes: Record<Theme, { label: string; Icon: LucideIcon; next: Theme }> = {
+  system: { label: '跟随系统', Icon: Monitor, next: 'light' }, light: { label: '浅色', Icon: Sun, next: 'dark' }, dark: { label: '深色', Icon: Moon, next: 'system' },
+};
+
 const folderIcons: Record<FolderRole, LucideIcon> = { inbox: Inbox, drafts: FileText, sent: Send, archive: Archive, junk: Ban, trash: Trash2, other: FolderIcon };
 
 export function Sidebar({ accounts, folders, filter, syncing, connected, onNavigate, onCompose, onAddAccount, onRemoveAccount, onEditAccount, onLogout, onOAuthSettings, counts, mobileOpen, onClose }: Props) {
   const allFolders = folderList(folders);
   const status = syncing.size ? '正在同步' : connected ? '已连接邮件服务' : '正在重新连接…';
+  const theme = themes[useTheme()];
   return <aside className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`} id={mobileOpen ? 'mobile-mail-sidebar' : 'mail-sidebar'} aria-label="邮箱导航">
     <Button className="sidebar-close" variant="ghost" aria-label="关闭邮箱导航" onClick={onClose}><X size={20} /></Button>
     <div className="brand" title="MailIsle"><Mail size={22} /><span>信屿</span><span className="local-badge">自部署</span></div>
@@ -76,6 +82,7 @@ export function Sidebar({ accounts, folders, filter, syncing, connected, onNavig
 
     <div className="sidebar-bottom">
       <button onClick={onOAuthSettings} title="OAuth 客户端设置"><Settings size={14} /><span>OAuth 客户端设置</span></button>
+      <button onClick={() => setTheme(theme.next)} title={`切换外观，下一个：${themes[theme.next].label}`}><theme.Icon size={14} aria-hidden /><span>外观：{theme.label}</span></button>
       <div role="status"><span className={`status-dot ${connected ? '' : 'offline'}`} /><span>{status}</span></div>
       <button onClick={onLogout} title="退出登录"><LogOut size={14} /><span>退出登录</span></button>
     </div>

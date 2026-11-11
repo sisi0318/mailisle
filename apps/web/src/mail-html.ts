@@ -7,7 +7,9 @@ const inlineImage = /^data:image\/(png|jpeg|gif|webp);base64,/i;
 // policy below lets nothing load except inline data: images and inline styles, whatever the CSS says.
 // Before that, scrubDeclarations() removes every declaration that names an outside resource, so the
 // policy is a backstop and not the only guard. The frame's sandbox runs no script either way.
-const policy = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'";
+// Images from the web are added to the policy only for a message whose reader asked to see them; the
+// page around the frame allows them in general, because a frame built from a string inherits its policy.
+const policy = (remoteImages: boolean) => `default-src 'none'; img-src data:${remoteImages ? ' https: http:' : ''}; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'`;
 
 const baseStyle = [
   'html{color-scheme:light}',
@@ -60,8 +62,11 @@ function scrubSheet(css: string): string {
   return [...sheet.cssRules].map(rule => rule.cssText).join('\n').replace(/<\//g, '<\\/');
 }
 
-/** Builds the document shown in the sandboxed reader frame and reports how many images were held back. */
-export function mailDocument(html: string, inlineImages: InlineImage[] = []): { document: string; blockedImages: number; embeddedAttachmentIds: string[] } {
+/**
+ * Builds the document shown in the sandboxed reader frame. `blockedImages` is how many images were held
+ * back, `remoteImages` how many of the message's images are on the web and could be, or are being, shown.
+ */
+export function mailDocument(html: string, inlineImages: InlineImage[] = [], options: { remoteImages?: boolean } = {}): { document: string; blockedImages: number; remoteImages: number; embeddedAttachmentIds: string[] } {
   const cidImages = new Map(inlineImages.map(image => [image.contentId, image]));
   const embedded = new Set<string>();
   const body = DOMPurify.sanitize(html, {
@@ -76,6 +81,7 @@ export function mailDocument(html: string, inlineImages: InlineImage[] = []): { 
     if (!element.style.length) element.removeAttribute('style');
   }
   let blockedImages = 0;
+  let remoteImages = 0;
   for (const image of body.querySelectorAll('img')) {
     const source = image.getAttribute('src') ?? '';
     if (/^cid:/i.test(source)) {
@@ -91,7 +97,15 @@ export function mailDocument(html: string, inlineImages: InlineImage[] = []): { 
     // A missing or empty size is unknown, not zero.
     const dimension = (name: string) => { const value = parseInt(image.getAttribute(name) ?? '', 10); return Number.isNaN(value) ? 99 : value; };
     const size = Math.min(dimension('width'), dimension('height'));
-    if (size <= 2) { image.remove(); continue; } // tracking pixel
+    if (size <= 2) { image.remove(); continue; } // tracking pixel, also when images are shown
+    // Only ordinary web addresses can be shown on request; anything else stays held back.
+    const remote = /^https?:\/\//i.test(source) ? source : source.startsWith('//') ? `https:${source}` : null;
+    if (remote) remoteImages++;
+    if (remote && options.remoteImages) {
+      image.setAttribute('src', remote);
+      image.setAttribute('referrerpolicy', 'no-referrer');
+      continue;
+    }
     blockedImages++;
     // A held-back image leaves its description behind as a small label; one without a description is decoration.
     const description = image.getAttribute('alt')?.trim();
@@ -105,8 +119,9 @@ export function mailDocument(html: string, inlineImages: InlineImage[] = []): { 
   for (const link of body.querySelectorAll<HTMLAnchorElement | HTMLAreaElement>('a, area')) { link.target = '_blank'; link.rel = 'noopener noreferrer'; link.removeAttribute('download'); }
   return {
     // Browsers may resolve the host names of links ahead of a click; for mail that would tell the sender it was opened.
-    document: `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy}"><meta http-equiv="x-dns-prefetch-control" content="off"><style>${baseStyle}</style></head><body>${body.innerHTML}</body></html>`,
+    document: `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy(!!options.remoteImages)}"><meta http-equiv="x-dns-prefetch-control" content="off"><meta name="referrer" content="no-referrer"><style>${baseStyle}</style></head><body>${body.innerHTML}</body></html>`,
     blockedImages,
+    remoteImages,
     embeddedAttachmentIds: [...embedded],
   };
 }

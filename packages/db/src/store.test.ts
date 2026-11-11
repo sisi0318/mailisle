@@ -155,6 +155,70 @@ describe('SQLite mail store', () => {
     expect(store.message(id)).toMatchObject({ preview: '完整邮件正文', cached: true });
   });
 
+  it('finds a single character wherever it stands in a run, without reading every message', () => {
+    const { inbox } = seedAccount(store);
+    store.applyBatch(inbox, [record(1, { subject: '三月份账单' }), record(2, { subject: '十二月' }), record(3, { subject: '11月5日 第3封' }), record(4, { subject: 'invoice.pdf 发票PDF' })]);
+    const subjects = (q: string) => store.list(query(q)).messages.map(message => message.subject).sort();
+    expect(subjects('月')).toEqual(['11月5日 第3封', '三月份账单', '十二月']);
+    expect(subjects('单')).toEqual(['三月份账单']);
+    expect(subjects('三')).toEqual(['三月份账单']);
+    expect(subjects('第3封')).toEqual(['11月5日 第3封']);
+    expect(subjects('发票pdf')).toEqual(['invoice.pdf 发票PDF']);
+    expect(subjects('月 账单')).toEqual(['三月份账单']);
+    expect(subjects('周')).toEqual([]);
+    const plan = store.sqlite.prepare("EXPLAIN QUERY PLAN SELECT count(*) FROM messages WHERE messages.id IN (SELECT id FROM message_search WHERE message_search MATCH ?)").all('"月" *') as { detail: string }[];
+    expect(plan.some(row => /SCAN messages(?! USING)/.test(row.detail))).toBe(false);
+  });
+
+  it('rewrites rows stored by an older version once, and continues after an interrupted start', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'mail-db-'));
+    const filename = join(directory, 'mail.sqlite');
+    const first = new MailStore(filename, migrations);
+    const { inbox } = seedAccount(first);
+    first.applyBatch(inbox, [record(1, { subject: '十二月' }), record(2, { subject: '三月' })]);
+    // As an older version left it: pairs only, and no version recorded.
+    first.sqlite.prepare("UPDATE message_search SET content = replace(content, ' 月 ', ' ')").run();
+    first.sqlite.prepare("DELETE FROM settings WHERE key = 'search-index-version'").run();
+    const [earlier] = first.sqlite.prepare('SELECT id FROM messages ORDER BY id').all() as { id: string }[];
+    first.sqlite.prepare("INSERT INTO settings VALUES ('search-index-progress', ?)").run(`2:${earlier.id}`);
+    expect(first.list(query('月')).total).toBe(0);
+    first.close();
+    const reopened = new MailStore(filename, migrations);
+    try {
+      // Only the message after the recorded position was still to do.
+      expect(reopened.list(query('月')).total).toBe(1);
+      expect(reopened.getSetting('search-index-version')).toBe('2');
+      expect(reopened.getSetting('search-index-progress')).toBeUndefined();
+      expect(reopened.sqlite.prepare('SELECT count(*) AS n FROM message_search').get()).toEqual({ n: 2 });
+    } finally { reopened.close(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it('drops mail known only by an old UID at once and hides provider mail until it is found again', () => {
+    const { inbox } = seedAccount(store);
+    store.applyBatch(inbox, [record(1), record(2, { remoteId: 'gmail-2', subject: '带服务商编号' })]);
+    const kept = store.list(query()).messages.find(message => message.subject === '带服务商编号')!;
+    store.cacheBody(kept.id, '已缓存的正文');
+    store.beginFolder(inbox.id, '2');
+    // The folder has not been read again yet: nothing is listed or counted twice in the meantime.
+    expect(store.sqlite.prepare('SELECT count(*) AS n FROM messages').get()).toEqual({ n: 1 });
+    expect(store.list(query('', 'all')).total).toBe(0);
+    expect(store.list(query('发票')).total).toBe(0);
+    expect(store.unreadCounts()).toMatchObject({ inbox: 0, all: 0 });
+    store.applyBatch(store.folder(inbox.id)!, [record(7, { remoteId: 'gmail-2', subject: '带服务商编号' })]);
+    expect(store.list(query('', 'all')).messages).toMatchObject([{ id: kept.id, cached: true }]);
+  });
+
+  it('accepts a move receipt for a message the destination scan has stored already', () => {
+    const { inbox, sent } = seedAccount(store);
+    store.applyBatch(inbox, [record()]);
+    const message = store.list(query()).messages[0];
+    store.applyBatch(sent, [record(9)]);
+    expect(store.list(query('', 'all')).total).toBe(2);
+    expect(store.moveLocation(inbox.id, 1, sent, { uid: 9, uidValidity: '1' })).toBe(true);
+    expect(store.list(query('', 'all')).messages).toMatchObject([{ id: message.id }]);
+    expect(store.messageLocations(message.id)).toMatchObject([{ uid: 9, folder: { id: sent.id } }]);
+  });
+
   it('counts unread messages once across provider labels and updates draft totals', () => {
     const a = seedAccount(store); const b = seedAccount(store, 'bob@example.com');
     store.applyBatch(a.inbox, [record(1, { remoteId: 'shared', flags: ['\\Flagged'] }), record(2, { flags: ['\\Seen'] })]);

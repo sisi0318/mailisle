@@ -256,3 +256,25 @@ it('never sends a saved password to a different server', async () => {
   await expect(service.updateAccount(accountId, moved)).rejects.toThrow('重新填写密码');
   expect(factory).not.toHaveBeenCalledWith(expect.objectContaining({ imap: expect.objectContaining({ host: 'localhost' }) }), expect.anything());
 });
+
+it('keeps syncing the remaining folders when one folder fails', async () => {
+  adapter.sync.mockImplementationOnce(async () => { throw new Error('这个文件夹暂时无法打开'); });
+  await service.sync(accountId);
+  expect(adapter.sync).toHaveBeenCalledTimes(2);
+  // Once for the round, and once more because the failure may have cost the connection.
+  expect(adapter.connect).toHaveBeenCalledTimes(2);
+  expect(store.folders(accountId).filter(folder => folder.uidNext === 2)).toHaveLength(1);
+  expect(store.account(accountId)?.error).toMatch(/^同步文件夹「.+」失败：这个文件夹暂时无法打开；其余文件夹已同步$/);
+  expect(adapter.watchInbox).toHaveBeenCalledOnce();
+  await service.sync(accountId);
+  expect(store.account(accountId)?.error).toBeNull();
+});
+
+it('ends the round with the original failure when the connection cannot be reopened', async () => {
+  adapter.sync.mockImplementationOnce(async () => { throw Object.assign(new Error('socket closed'), { code: 'ECONNRESET' }); });
+  adapter.connect.mockImplementationOnce(async () => {}).mockImplementationOnce(async () => { throw Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }); });
+  await service.sync(accountId);
+  expect(adapter.sync).toHaveBeenCalledOnce();
+  expect(store.account(accountId)?.error).toMatch(/^同步文件夹「.+」失败：邮件服务器连接失败（ECONNRESET）/);
+  expect(store.account(accountId)?.error).not.toContain('其余文件夹已同步');
+});

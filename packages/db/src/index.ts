@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Account, Cursor, DraftInput, DraftSummary, FlagUpdate, Folder, FolderRole, ListInput, MailFlags, MailMetadata, Message, MessagePage, MoveReceipt, UnreadCounts, Upload } from '@mail/shared';
 import * as schema from './schema';
-import { previewText, searchExpression, tokenize } from './search';
+import { previewText, SEARCH_INDEX_VERSION, searchExpression, tokenize } from './search';
 
 const { bodyText: _bodyText, ...messageColumns } = getTableColumns(schema.messages);
 
@@ -28,6 +28,34 @@ export class MailStore {
       })();
     }
     this.db = drizzle(this.sqlite, { schema });
+    this.upgradeSearchIndex();
+  }
+
+  /**
+   * Writes every search row again after the stored token form changed. It runs before the store is used,
+   * in batches, and records how far it got, so that an interrupted start continues instead of starting over.
+   */
+  private upgradeSearchIndex() {
+    if (this.getSetting('search-index-version') === SEARCH_INDEX_VERSION) return;
+    const total = (this.sqlite.prepare('SELECT count(*) AS n FROM messages').get() as { n: number }).n;
+    const [version, position = ''] = (this.getSetting('search-index-progress') ?? '').split(':');
+    let after = version === SEARCH_INDEX_VERSION ? position : '';
+    if (total >= 1000) console.log(`正在升级搜索索引（共 ${total} 封邮件）…`);
+    const batch = this.sqlite.prepare('SELECT id FROM messages WHERE id > ? ORDER BY id LIMIT 500');
+    for (;;) {
+      const rows = batch.all(after) as { id: string }[];
+      if (!rows.length) break;
+      after = rows.at(-1)!.id;
+      this.sqlite.transaction(() => {
+        for (const row of rows) this.indexMessage(row.id);
+        this.setSetting('search-index-progress', `${SEARCH_INDEX_VERSION}:${after}`);
+      })();
+    }
+    this.sqlite.transaction(() => {
+      this.setSetting('search-index-version', SEARCH_INDEX_VERSION);
+      this.sqlite.prepare('DELETE FROM settings WHERE key = ?').run('search-index-progress');
+    })();
+    if (total >= 1000) console.log('搜索索引升级完成');
   }
 
   close() { this.sqlite.close(); }
@@ -85,7 +113,7 @@ export class MailStore {
   deleteDraft(id: string) { this.db.delete(schema.drafts).where(eq(schema.drafts.id, id)).run(); }
   unreadCounts(): UnreadCounts {
     const rows = this.sqlite.prepare(`WITH unread AS MATERIALIZED (
-      SELECT id, account_id FROM messages m WHERE NOT EXISTS (
+      SELECT id, account_id FROM messages m WHERE EXISTS (SELECT 1 FROM locations l WHERE l.message_id = m.id) AND NOT EXISTS (
         SELECT 1 FROM locations l, json_each(l.flags) flag WHERE l.message_id = m.id AND flag.value = ?
       )
     ), inbox AS (
@@ -133,9 +161,15 @@ export class MailStore {
     return this.folders(accountId);
   }
   beginFolder(folderId: string, uidValidity: string) {
-    if (this.folder(folderId)?.uidValidity === uidValidity) return;
+    const folder = this.folder(folderId);
+    if (!folder || folder.uidValidity === uidValidity) return;
     this.sqlite.transaction(() => {
       this.db.delete(schema.locations).where(eq(schema.locations.folderId, folderId)).run();
+      // Mail known only by its old UID can never be matched again. It goes now, instead of staying as a second
+      // copy of itself until the folder has been read in full. Mail with a provider ID is recognised when it is
+      // fetched again and keeps its row, body cache and search entry; until then list() and the counts skip it.
+      this.sqlite.prepare(`DELETE FROM messages WHERE account_id = ? AND remote_key NOT LIKE 'provider:%'
+        AND NOT EXISTS (SELECT 1 FROM locations WHERE locations.message_id = messages.id)`).run(folder.accountId);
       this.db.update(schema.folders).set({ uidValidity, uidNext: 1, modseq: null }).where(eq(schema.folders.id, folderId)).run();
     })();
   }
@@ -188,7 +222,11 @@ export class MailStore {
           .onConflictDoUpdate({ target: [schema.locations.folderId, schema.locations.uid], set: { messageId: location.messageId, flags: location.flags } }).run();
         const message = this.db.select().from(schema.messages).where(eq(schema.messages.id, location.messageId)).get()!;
         if (!message.remoteKey.startsWith('provider:')) {
-          this.db.update(schema.messages).set({ remoteKey: `${target.id}:${receipt.uidValidity}:${receipt.uid}` }).where(eq(schema.messages.id, message.id)).run();
+          const remoteKey = `${target.id}:${receipt.uidValidity}:${receipt.uid}`;
+          // A scan of the destination can have stored the moved message under this key already. Its location was
+          // pointed at the original just above, so that row is an empty duplicate and would collide on the key.
+          this.sqlite.prepare('DELETE FROM messages WHERE account_id = ? AND remote_key = ? AND id <> ?').run(message.accountId, remoteKey, message.id);
+          this.db.update(schema.messages).set({ remoteKey }).where(eq(schema.messages.id, message.id)).run();
         }
       }
       this.db.delete(schema.locations).where(and(eq(schema.locations.folderId, folderId), eq(schema.locations.uid, uid))).run();
@@ -215,6 +253,9 @@ export class MailStore {
       conditions.push(sql`EXISTS (SELECT 1 FROM locations l WHERE l.message_id = messages.id AND l.folder_id = ${input.folderId})`);
     } else if (input.view === 'inbox' && !input.q) {
       conditions.push(sql`EXISTS (SELECT 1 FROM locations l JOIN folders f ON f.id = l.folder_id WHERE l.message_id = messages.id AND f.role = 'inbox')`);
+    } else if (input.view !== 'starred') {
+      // Mail whose folder is being read again after a UIDVALIDITY change is in no folder for a moment.
+      conditions.push(sql`EXISTS (SELECT 1 FROM locations l WHERE l.message_id = messages.id)`);
     }
     if (input.view === 'starred') conditions.push(sql`EXISTS (SELECT 1 FROM locations l, json_each(l.flags) flag WHERE l.message_id = messages.id AND flag.value = ${'\\Flagged'})`);
     if (input.q) {

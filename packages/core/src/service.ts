@@ -266,22 +266,39 @@ export class MailService {
     if (this.stopped || this.changingAccounts.has(id) || !this.store.account(id)) return;
     this.emit({ type: 'sync', accountId: id, state: 'running' });
     let stage = '连接邮箱';
+    // Folders that could not be synced. The others still are, so one broken folder does not hold up the whole mailbox.
+    const failed: { stage: string; error: unknown }[] = [];
+    let folderCount = 0;
+    const report = (cause: { stage: string; error: unknown }, finished: boolean) => {
+      const others = !finished ? '' : failed.length > 1 ? `；另有 ${failed.length - 1} 个文件夹也未同步` : folderCount > 1 ? '；其余文件夹已同步' : '';
+      const message = `${cause.stage}失败：${publicError(cause.error)}${others}`;
+      this.store.syncStatus(id, message);
+      this.emit({ type: 'sync', accountId: id, state: 'error', error: message });
+    };
     try {
       await this.withAdapter(id, async adapter => {
         stage = '读取文件夹列表';
         const folders = this.store.saveFolders(id, await adapter.listFolders());
+        folderCount = folders.length;
         for (const listed of folders) {
           if (this.stopped || this.changingAccounts.has(id)) return;
           const folder = this.store.folder(listed.id)!;
+          // The failure may have cost the connection. If it cannot be reopened, the round ends here.
+          if (failed.length) { stage = '重新连接邮箱'; await adapter.connect(); }
           stage = `同步文件夹「${folder.name}」`;
-          const { cursor, uids } = await adapter.sync(folder, {
-            knownUids: this.store.folderUids(folder.id),
-            begin: validity => this.store.beginFolder(folder.id, validity),
-            messages: records => this.store.applyBatch(this.store.folder(folder.id)!, records),
-            flags: records => this.store.applyFlags(folder.id, records),
-          });
-          this.store.finishFolder(folder.id, cursor, uids);
-          this.emit({ type: 'change', accountId: id });
+          try {
+            const { cursor, uids } = await adapter.sync(folder, {
+              knownUids: this.store.folderUids(folder.id),
+              begin: validity => this.store.beginFolder(folder.id, validity),
+              messages: records => this.store.applyBatch(this.store.folder(folder.id)!, records),
+              flags: records => this.store.applyFlags(folder.id, records),
+            });
+            this.store.finishFolder(folder.id, cursor, uids);
+            this.emit({ type: 'change', accountId: id });
+          } catch (error) {
+            if (this.stopped || this.changingAccounts.has(id)) return;
+            failed.push({ stage, error });
+          }
         }
         if (!this.stopped && !this.changingAccounts.has(id) && !this.watchers.has(id)) {
           try {
@@ -294,14 +311,16 @@ export class MailService {
         }
       });
       if (this.stopped || this.changingAccounts.has(id)) return;
-      this.store.syncStatus(id, null);
-      this.emit({ type: 'sync', accountId: id, state: 'idle' });
+      if (failed.length) report(failed[0], true);
+      else {
+        this.store.syncStatus(id, null);
+        this.emit({ type: 'sync', accountId: id, state: 'idle' });
+      }
       void this.prefetcher.schedule(id);
     } catch (error) {
       if (this.stopped || this.changingAccounts.has(id)) return;
-      const message = `${stage}失败：${publicError(error)}`;
-      this.store.syncStatus(id, message);
-      this.emit({ type: 'sync', accountId: id, state: 'error', error: message });
+      // What went wrong first is the more useful thing to show than the reconnect that failed after it.
+      report(failed[0] ?? { stage, error }, false);
     }
   }
   private async drainSync(id: string) {

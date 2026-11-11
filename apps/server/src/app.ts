@@ -40,7 +40,9 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     c.header('X-Content-Type-Options', 'nosniff');
     c.header('Referrer-Policy', 'no-referrer');
     c.header('X-Frame-Options', 'DENY');
-    c.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+    // The reader frame is built from a string and inherits this policy, so images from the web have to be
+    // allowed here for "show images" to work at all. The frame's own policy keeps them out until that is asked for.
+    c.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
     await next();
   });
   app.use('/api/*', async (c, next) => {
