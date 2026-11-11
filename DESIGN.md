@@ -277,7 +277,7 @@ Thunderbird 源码里还有 Yahoo、AOL、Fastmail 等服务商的预置值,需�
 | 4 | 原生适配器:Gmail API、Microsoft Graph、JMAP | 按需做,换取更好的标签支持和同步效率 |
 | 5 | Proton sidecar、Electron 桌面壳、私有协议插件 | 按需做 |
 
-阶段 2 OAuth 已实现:Google/Microsoft XOAUTH2、本机及粘贴回调、加密令牌刷新、服务商及账号级客户端设置。两份教程的入口名称已更新。真实 Google/Microsoft 账号授权与组织策略兼容性仍待验收;自动化测试使用本地授权和邮件服务器。
+阶段 2 OAuth 已实现:Google/Microsoft XOAUTH2、本机及粘贴回调、加密令牌刷新、服务商及账号级客户端设置。两份教程的入口名称已更新。Gmail 和 Outlook 的真实账号已于 2026-11-11 用 Thunderbird 预置值走通授权;组织账号的策略兼容性仍待验收。自动化测试使用本地授权和邮件服务器。
 
 ## 10. 参考项目
 
@@ -301,7 +301,7 @@ Thunderbird 源码里还有 Yahoo、AOL、Fastmail 等服务商的预置值,需�
 
 | 事项 | 目前掌握的情况 |
 |---|---|
-| 用预置的 Thunderbird client ID 完成授权 | Google 已验证到登录页一步,接受 `http://127.0.0.1:端口` 回调。Microsoft 要登录后才校验回调地址,需要实测 |
+| 用预置的 Thunderbird client ID 完成授权 | 已解决:2026-11-11 用 Gmail 和 Outlook 的真实账号走通,`http://127.0.0.1:端口` 回调在两家都可用。Microsoft 365 组织账号尚未测试 |
 | 163 / 126 的 `ID` 命令 | 其他基于 ImapFlow 的项目已用真实账号测通,本项目接入时再测一次 |
 | QQ 邮箱默认只同步最近 30 天 | 凭印象,需要实测并写进接入说明 |
 | 两份 OAuth 教程的步骤 | 按官方文档写成,没有实际走一遍;权限添加一步的菜单位置尤其需要核对 |

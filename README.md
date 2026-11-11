@@ -1,124 +1,153 @@
 # 信屿 · MailIsle
 
-信屿是一个在自己的电脑上运行的多邮箱客户端。一个 Node.js 进程负责同步、SQLite 本地索引、HTTP API 和浏览器界面。设计见 [DESIGN.md](DESIGN.md)，项目仓库为 [sisi0318/mailisle](https://github.com/sisi0318/mailisle)。
+信屿是一个运行在自己电脑上的多邮箱客户端。它把 QQ、163、Gmail、Outlook 等邮箱的邮件同步到本机，在同一个浏览器界面里收信、搜索和写信。应用直接连接各家邮箱服务器，没有中转服务；邮件索引和登录凭据都只保存在本机。
 
-已实现第 1 阶段主要功能与第 2 阶段 OAuth：通用 IMAP/SMTP、本机登录、统一收件箱、正文预取、中文搜索、附件发信、本地草稿、回复转发，以及 Google/Microsoft XOAUTH2。QQ 已验证同步与正文预取；Google/Microsoft 的真实账号授权和组织策略兼容性仍待验收。
+![信屿的统一收件箱：左侧是视图和邮箱列表，中间是合并后的邮件列表，右侧是正在阅读的邮件](docs/images/inbox.png)
 
-## 启动
+> **状态：开发中，尚未发布正式版本。** 目前只能在运行它的这台电脑上访问，远程访问还没有实现。用真实账号验证过的目前有 QQ 邮箱的收信，以及 Gmail 和 Outlook 的 OAuth 授权，见[支持的邮箱](#支持的邮箱)。
 
-需要 Node.js 22.12 或更新的 LTS 版本，以及 pnpm 10。当前验证环境为 Windows、Node.js 22.22.2。
+## 功能
 
-在仓库根目录执行：
+- **统一收件箱**：多个邮箱的来信合并在一个列表里，也可以按邮箱和文件夹查看；侧栏显示未读数。
+- **跨邮箱搜索**：搜索主题、收发件人和正文。支持中文，两个字的词和单个字都能查到。
+- **本地存储**：邮件索引保存在本机 SQLite；打开过的邮件和附件缓存到磁盘，断网时仍可阅读。
+- **自动同步**：收件箱通过 IMAP IDLE 接收新邮件通知，其余文件夹每分钟检查一次。同时打开的多个浏览器窗口保持一致。
+- **安全地阅读 HTML 邮件**：保留发件人的排版，但脚本、表单、外部样式和远程图片（包括追踪像素）一律屏蔽。随邮件附带的内嵌图片正常显示。
+- **写信**：富文本、回复、全部回复、转发、抄送和密送、附件、本地草稿。
+- **邮件操作**：已读、星标、移动、归档、移到已删除。
+- **OAuth 登录**：Gmail 和 Outlook / Microsoft 365 使用 OAuth 登录。默认用 Thunderbird 的公开客户端，也可以换成自己注册的。
+- **账号级代理**：每个邮箱可以单独设置 HTTP 或 SOCKS5 代理。
+- **自动配置**：按邮箱后缀预填常见服务商的服务器参数，其他域名可在线查询 Thunderbird 的配置库。
 
-```powershell
+## 支持的邮箱
+
+所有邮箱都通过 IMAP 收信、SMTP 发信。
+
+| 邮箱 | 登录方式 | 验证情况 |
+| --- | --- | --- |
+| QQ 邮箱 | 客户端授权码 | 已用真实账号验证同步和正文预取；发信待验证 |
+| 网易 163 / 126 / Yeah | 客户端授权码 | 待真实账号验证 |
+| Gmail / Google Workspace | OAuth，或应用专用密码 | 已用真实账号验证 OAuth 授权（Thunderbird 预置客户端） |
+| Outlook.com / Hotmail | OAuth | 已用真实账号验证 OAuth 授权（Thunderbird 预置客户端） |
+| Microsoft 365（工作或学校） | OAuth | 待真实账号验证；需要管理员允许 IMAP 和 SMTP AUTH |
+| iCloud Mail | App 专用密码 | 待真实账号验证 |
+| Yahoo Mail | 应用密码 | 待真实账号验证 |
+| 其他 IMAP/SMTP 邮箱 | 密码 | 手动填写服务器，或使用「在线查找服务器」 |
+
+“待真实账号验证”的服务商已有预设参数，并通过了本地测试服务器上的自动化测试，但还没有人用真实账号走通过。
+
+## 快速开始
+
+需要 Node.js 22.12 或更新的版本，以及 pnpm 10。目前在 Windows、Node.js 22.22.2 上验证过。
+
+```sh
+git clone https://github.com/sisi0318/mailisle.git
+cd mailisle
 pnpm install
-Copy-Item .env.example .env
 ```
 
-编辑 `.env`，把 `MAIL_MASTER_PASSWORD` 改为自己的长密码（至少 12 个字符），然后：
+把 `.env.example` 复制为 `.env`，将其中的 `MAIL_MASTER_PASSWORD` 改成自己的长密码（至少 12 个字符），然后：
 
-```powershell
+```sh
 pnpm build
 pnpm start
 ```
 
-打开 <http://127.0.0.1:3000>，使用同一个密码登录，点击「连接邮箱」。账号保存前会验证 IMAP 和 SMTP 登录；默认使用 TLS，也支持强制 STARTTLS。本机 Bridge 和测试服务器可以显式选择明文连接。
+打开 <http://127.0.0.1:3000>，用刚才设置的密码登录，点击「连接邮箱」。保存前应用会验证收信和发信两个连接。
 
-`.env` 和本地数据已加入 `.gitignore`。首次启动后必须继续使用原来的主密码，否则无法解密已有凭据；当前没有密码修改或找回界面。浏览器登录会话保存在内存中，重启服务后需要重新登录。
+> **主密码设定后不能更改。** 它同时用于登录和加密已保存的邮箱凭据；换一个密码启动会无法解密已有数据。目前没有修改或找回密码的功能。
+
+## 配置
+
+通过 `.env` 文件或环境变量设置。
 
 | 环境变量 | 默认值 | 用途 |
 | --- | --- | --- |
-| `MAIL_MASTER_PASSWORD` | 必填 | 主密钥派生口令，同时作为首次登录密码 |
+| `MAIL_MASTER_PASSWORD` | 必填 | 登录密码，同时用来派生加密凭据的主密钥 |
 | `MAIL_PORT` | `3000` | HTTP 监听端口 |
-| `MAIL_DATA_DIR` | `.data` | SQLite、正文与附件存储目录 |
+| `MAIL_DATA_DIR` | `.data` | 数据库、邮件正文和附件的存放目录 |
 
-当前只允许监听 `127.0.0.1`。远程访问开关和多因素验证按设计留到第 3 阶段。
+应用目前只监听 `127.0.0.1`，不能改成其他地址。
+
+## Gmail 与 Outlook 的 OAuth 登录
+
+连接这两类邮箱时，应用会打开服务商的授权页。授权完成后浏览器跳回本机；如果浏览器和应用不在同一台机器上，可以把地址栏里的回调网址粘贴回应用。
+
+默认使用 Thunderbird 的公开 OAuth 客户端，所以授权页显示的应用名是 **Mozilla Thunderbird**。这个预置值可能失效，也可能被组织管理员禁用。这时可以在侧栏的「OAuth 客户端设置」里换成自己注册的客户端：
+
+- [注册自己的 Google OAuth 客户端](docs/oauth-google.md)
+- [注册自己的 Microsoft OAuth 客户端](docs/oauth-microsoft.md)
+
+## 安全
+
+- 只监听 `127.0.0.1`，访问需要登录，并校验请求的 Host 和 Origin。
+- 邮箱密码、授权码和 OAuth 令牌用 AES-256-GCM 加密后保存，密钥由主密码派生。
+- 邮件 HTML 先清洗，再放进不能运行脚本的隔离框架里显示；框架自身的内容安全策略禁止任何网络请求。
+- 邮件正文、附件和数据库本身**没有**加密。请保护好数据目录所在的磁盘。
+
+## 已知限制
+
+- 只能在本机访问，不能从手机或其他电脑打开。
+- 草稿保存在本机，不会同步到邮箱服务商的草稿箱。
+- 远程图片只能屏蔽，没有“显示图片”的选项。
+- 标记、移动等操作需要联网，断网时不会排队等待。
+- 没有永久删除，只能移到已删除文件夹。
+- 邮件缓存没有容量上限；移除邮箱后，已下载的邮件缓存不会自动清理。
+- 登录状态保存在内存里，重启后需要重新登录。
+
+## 路线图
+
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| 1 | 通用 IMAP/SMTP、本地存储、统一收件箱、搜索、读写信、本机登录 | 已实现；还差缓存容量管理、Docker 镜像和真实账号验收 |
+| 2 | Gmail 和 Outlook 的 OAuth 登录 | 已实现；Gmail 和 Outlook 的授权已用真实账号验证，Microsoft 365 组织账号待验收 |
+| 3 | 远程访问（对外监听开关、两步验证）、PWA、新邮件通知 | 未开始 |
+| 4 | 原生接口：Gmail API、Microsoft Graph、JMAP | 未开始，按需要做 |
+| 5 | Proton 桥接、桌面壳 | 未开始，按需要做 |
 
 ## 开发
 
-在两个终端中分别运行：
+一个 Node.js 进程同时负责同步、HTTP API 和托管前端。代码是 pnpm workspace：
 
-```powershell
-pnpm dev
+```
+apps/server      进程入口：HTTP API、SSE、托管前端
+apps/web         React 单页应用
+packages/core    同步引擎、IMAP/SMTP 适配器、OAuth、写信
+packages/db      SQLite 表结构、迁移、全文索引
+packages/shared  前后端共用的类型和校验规则
 ```
 
-```powershell
-pnpm dev:web
+开发时在两个终端里分别运行后端和前端，然后打开 <http://127.0.0.1:5173>：
+
+```sh
+pnpm dev        # 后端，监听 3000 端口，改动源码后自动重启
+pnpm dev:web    # 前端开发服务器，把 /api 转发到 3000 端口
 ```
 
-打开 <http://127.0.0.1:5173>。Vite 将 `/api` 代理到本机 3000 端口；开发时保留默认 API 端口。`pnpm dev` 开启源码监听和开发 Origin 白名单。
+提交前运行：
 
-```powershell
-pnpm check
-pnpm test
-pnpm build
+```sh
+pnpm check      # 类型检查
+pnpm test       # 单元测试
+pnpm build      # 生产构建
 ```
 
-## 当前行为
+集成测试需要一个本地的 GreenMail 测试邮件服务器，不连接真实邮箱：
 
-- 添加账号时可自动识别 QQ、163、126、Yeah、Gmail、iCloud、Yahoo、Outlook 的常见邮箱后缀，预填服务器；工作或学校邮箱可手动选择 Microsoft 365。Gmail 可选 OAuth 或应用专用密码，Outlook/Microsoft 365 使用 OAuth。
-- 「在线查找服务器」会向 Thunderbird ISPDB 查询邮箱域名，不发送完整邮箱地址或凭据。只选加密 IMAP/SMTP 配置，未找到或网络失败时保留手动配置入口。OAuth 支持 Google 和 Microsoft 的标准邮件端点。
-- OAuth 授权提供随机端口本机回调和粘贴完整回调地址两种方式，不使用 Google OOB。自定义 Microsoft 客户端的 localhost 回调同时监听 IPv4/IPv6。授权会话有效 10 分钟，绑定当前浏览器登录会话；关闭连接窗口或退出登录会取消授权。
-- 侧栏的「OAuth 客户端设置」可覆盖服务商默认值，连接邮箱时也可单独指定客户端。预置值集中在 `packages/core/src/oauth-presets.ts`，可直接移除对应条目；授权前明确提示 Mozilla Thunderbird 名称和可能失效的风险。教程：[Google](docs/oauth-google.md)、[Microsoft](docs/oauth-microsoft.md)。
-- OAuth 只申请邮件协议权限和必要的离线访问。客户端 secret、访问令牌、刷新令牌加密保存；访问令牌到期前一分钟刷新，同账号并发刷新合并，轮换后的刷新令牌立即落盘。修改默认客户端后已有账号继续使用授权时的配置，需到「邮箱设置」重新授权才能更换。
-- 账号展开后可进入「邮箱设置」修改参数，原密码和代理认证信息不会回传。密码留空保留；主密码框填入新值会同时更新收发信密码，发信密码可另填。先验证新配置，通过后再替换连接。更换 IMAP 服务器、端口或登录名会重建该账号的本地邮件索引，本地草稿保留。
-- 多账号收件箱、账号文件夹、星标列表、跨账号搜索和分页虚拟滚动。侧栏显示未读数，跨标签同一邮件不重复计数；窄屏通过可关闭的导航抽屉切换账号和文件夹。
-- 同步所有可选择的文件夹，收件箱用独立连接 IDLE，所有文件夹每分钟轮询。只对本地尚无映射的 UID 拉取信封/引用头，已有邮件只取标记；支持 CONDSTORE 时再用 MODSEQ 缩小标记查询。没有 CONDSTORE 时仍需核对 UID 和标记，但不会重复解析信封、聚合会话或重建全文索引。每批最多 200 封，批次之间释放邮箱锁，文件夹完整成功后才推进游标。调整 QQ 收取范围后出现的较旧 UID 也能补回。
-- 每账号复用一条业务 IMAP 连接，另有一条收件箱 IDLE 连接。业务连接连续 90 秒无网络活动时超时，长于 60 秒轮询间隔；断线后下一次操作重连，已提交的操作不会自动重放。同步期间的新通知会合并为紧接着的一轮补同步。
-- SEARCH 失败，或返回空列表但服务器仍报告有邮件时，本轮同步报错并保留对应文件夹的本地邮件、位置、搜索索引和游标；只有查询成功后才处理 UIDVALIDITY 变化和删除核对。
-- UIDVALIDITY 变化时重建 UID 映射。支持服务端邮件删除、文件夹移除和 Gmail `X-GM-MSGID` 去重。按 Message-ID / References / In-Reply-To 聚合会话，已有服务商线程 ID 时直接使用。
-- 主题与收发件人同步后即可搜索；后台按新到旧预取正文，逐步补全预览和正文全文索引。只取正文 MIME 部分，不预先下载普通附件，不改变未读标记。预取使用独立连接，每账号一个任务、每 20 封通知一次界面；退出后下次启动继续，单封失败会继续处理后面的邮件并在下一轮重试。预览会去掉链接噪声，原文仍保留供搜索。
-- 正文预取只用于预览和搜索；完整阅读内容、附件仍在打开邮件时缓存到磁盘，完整缓存可离线阅读。支持两字中文、长中文短语和单字查询。单字与纯标点使用原文子串匹配，普通查询使用 FTS5 短语搜索。
-- HTML 经 DOMPurify 清洗后放入 sandbox iframe，保留发件人的排版样式，但样式中引用外部资源的声明会被删除，远程图片默认屏蔽。`<img src="cid:…">` 可显示本地 PNG/JPEG/GIF/WebP 附件；图片以 data URL 内嵌，不放宽正文框的网络策略。已嵌入的图片不重复列在附件栏，未引用的图片及 SVG 等其他格式保留为下载附件。旧 CID 缓存先立即显示，再后台补齐图片元数据，失败时仍可读旧缓存。
-- 支持已读、星标、移动、归档和移到垃圾箱。服务器确认后直接更新本地状态并通过 SSE 通知，操作不等待全账号同步。移动返回 UIDPLUS 映射时保留邮件 ID、正文缓存和搜索索引；未返回映射时先移除原位置并后台补同步目标位置。不提供脱机操作队列或永久删除按钮。
-- 富文本写信、回复（优先 Reply-To）、全部回复、转发、抄送和密送。引用原文使用转义后的纯文本，日期按浏览器时区显示；全部回复会去重并排除已连接邮箱地址。转发默认携带原附件（内嵌图片作为文件），也可选择仅转发正文。
-- 支持附件上传和下载，最多 20 个、总计不超过 20 MiB。附件按随机 ID 存盘，文件名不用于本地路径。未保存且不再引用的临时附件在创建 24 小时后，由启动及每小时清理任务回收。
-- 写信时可保存「本地草稿」，关闭有修改的编辑器会询问是否保存；也可明确丢弃。草稿和附件保存在本机服务，可在其他已登录设备上继续编辑，**不会同步到邮箱服务商的草稿箱**。发送前先保存，SMTP 失败保留草稿，接受后删除该草稿与不再引用的上传附件。
-- 一般邮箱 APPEND 已发送副本；服务商自动保存时，在账号设置中选择「服务商会自动保存」。SMTP 已接受但副本或草稿清理失败会单独提示，不自动重发。
-- IMAP、SMTP 和 OAuth 令牌请求共享账号代理设置，分别建立代理连接。支持 HTTP CONNECT 和 SOCKS5。浏览器访问授权页的代理由浏览器配置。ImapFlow 启用客户端 ID 信息。
-- 登录使用 scrypt、HttpOnly / SameSite=Strict 会话 cookie；检查 Host / Origin，限制重复登录尝试。邮箱配置整体使用 AES-256-GCM 加密后保存。
-
-SQLite 邮件、草稿和磁盘正文、附件未做整库加密。完整邮件缓存暂未实现容量上限和孤立文件回收；移除账号会删除本地索引与该账号的本地草稿，已下载的邮件缓存暂时保留。
-
-QQ 如果只能同步近期邮件，请在网页版设置的 POP3/IMAP/SMTP 相关选项中检查「收取选项」，将时间范围改为「全部」并保存，再回本应用同步。客户端只能收取 QQ 通过 IMAP 提供的邮件；UIDNEXT 不是邮件数量，不能据此判断漏信。QQ 返回的 `\\NoSelect` 分类节点会被跳过，其下可选择的子文件夹仍会同步。
-
-## 协议集成测试
-
-使用设计指定的 GreenMail，不连接真实邮箱。测试账号、密码仅用于隔离测试服务。
-
-集成测试包含真实 TCP 故障代理：注入 SEARCH 的 NO/BAD/异常空结果，并模拟静默断链。测试注入 2 秒超时以缩短运行时间，单元测试另外断言生产默认值仍为 90 秒。OAuth 测试使用临时本机 HTTP 授权服务器和 SASL 邮件端点，覆盖 PKCE、state、回调、刷新轮换、撤销、会话隔离、XOAUTH2 和发信失败不重放。
-
-```powershell
+```sh
 docker compose -f compose.test.yaml up -d
 pnpm test:integration
 docker compose -f compose.test.yaml down
 ```
 
-也可以从 [GreenMail 官方发布](https://greenmail-mail-test.github.io/greenmail/#download) 获取 `greenmail-standalone-2.1.15.jar`，使用 Java 11+ 在另一个终端运行：
+没有 Docker 时的做法见[实现说明](docs/implementation.md#测试)。
 
-```powershell
-java '-Dgreenmail.smtp.hostname=127.0.0.1' '-Dgreenmail.smtp.port=3025' `
-  '-Dgreenmail.imap.hostname=127.0.0.1' '-Dgreenmail.imap.port=3143' `
-  '-Dgreenmail.users=alice:test-password@example.com,bob:test-password@example.com' `
-  '-Dgreenmail.users.login=email' -jar greenmail-standalone-2.1.15.jar
-```
+## 文档
 
-集成测试覆盖：收取 MIME、正文和附件缓存、正文检索、重复同步、标记、移动与删除、SMTP 投递、单份已发送副本以及 IDLE 通知。数据库测试覆盖 UIDVALIDITY 变化、跨标签去重、乱序会话聚合和 SQLite 重开恢复。
+- [DESIGN.md](DESIGN.md)：技术方案、各家邮箱的接入方式、安全要求和路线图。
+- [实现说明](docs/implementation.md)：当前版本的具体行为、边界情况和测试覆盖。
+- [注册 Google OAuth 客户端](docs/oauth-google.md)、[注册 Microsoft OAuth 客户端](docs/oauth-microsoft.md)。
 
-同步优化的回归检查还覆盖：无 CONDSTORE 时不重复取信封、旧 UID 补回、连接复用与断线重连、批次间让出连接处理标记操作、通知合并补同步、UIDPLUS 移动与进行中扫描交错、旧数据库迁移。会话引用使用独立的索引表，FTS5 更新/删除通过稳定的整数行号定位。
+## 许可证
 
-正文预取测试覆盖单段 GB18030、纯 HTML、嵌套多段 MIME、附件排除、未读状态不变、任务取消恢复、失败重试及前后台连接分离。CID 测试覆盖缓存元数据、认证后的图片数据、附件强制下载和旧缓存升级；浏览器验收检查图片解码、未引用附件保留、脚本/表单删除与外链图片/CSS 零访问。列表查询只取预览等元数据，不加载整篇正文。
-
-账号与写信测试覆盖凭据不回传、留空保留密码、无效配置不替换旧账号、切换 IMAP 身份重建索引、草稿重启恢复、附件字节一致性、上传大小限制、失败保留草稿、接受后清理、回复去重和原文转义。浏览器验收覆盖保存/重开/发送草稿、转发附件、未读反馈和手机抽屉切换账号。
-
-2026-11-10 在同一 Windows / Node.js 22 环境，以独立线程的合成邮件测量内存 SQLite 元数据入库：5,000 封从约 4.2 秒降至 1.7 秒，30,000 封约 10.3 秒；200 封一批，最大批次约 95 毫秒。这是本地入库耗时，不包含网络下载和正文解析，也不是生产环境响应时间保证。
-
-## 接下来
-
-- 继续验证 QQ 发信，以及 163、iCloud 等实际账号的兼容性。
-- 完善第 1 阶段：完整邮件缓存容量管理和 Docker 应用镜像；另有 CONDSTORE 无变化跳过、用户操作更短期限等优化。
-- 用真实 Google / Microsoft 账号验收首次授权、长期刷新和重新授权；组织账号还需验证管理员策略、IMAP 和 SMTP AUTH 开关。
-
-源代码按 `apps/server`、`apps/web`、`packages/core`、`packages/db`、`packages/shared` 分层。SQL 迁移位于 `packages/db/migrations`；表结构变更同步修改 Drizzle schema，并新增顺序编号的迁移文件。生产构建会复制迁移文件到服务端产物目录。
-
-预设参数集中在 `packages/shared/src/providers.ts`，2026-11-10 核对来源：[Thunderbird ISPDB](https://github.com/thunderbird/autoconfig/tree/master/ispdb)、[Google](https://developers.google.com/workspace/gmail/imap/imap-smtp)、[Apple](https://support.apple.com/102525)、[Yahoo](https://help.yahoo.com/kb/SLN4075.html)、[Microsoft](https://support.microsoft.com/en-us/outlook/pop-imap-and-smtp-settings-for-outlook-com)。
+以 [Apache License 2.0](LICENSE) 发布。
