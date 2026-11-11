@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MailStore } from './index';
 import { listSchema } from '@mail/shared';
+import { draftSchema } from '@mail/shared';
 import { database, migrations, record, seedAccount } from '../../../tests/fixtures';
 
 describe('SQLite mail store', () => {
@@ -135,5 +136,38 @@ describe('SQLite mail store', () => {
     store.deleteAccount(accountId);
     expect(store.sqlite.prepare('SELECT count(*) AS n FROM thread_keys').get()).toEqual({ n: 0 });
     expect(store.sqlite.prepare('SELECT count(*) AS n FROM message_search_rows').get()).toEqual({ n: 0 });
+  });
+
+  it('indexes unopened body text and cleans preview links without dropping searchable content', () => {
+    const { inbox, accountId } = seedAccount(store);
+    store.applyBatch(inbox, [record(1), record(2), record(3)]);
+    const pending = store.pendingBodies(accountId, 2);
+    expect(pending).toHaveLength(2);
+    expect(store.pendingBodies(accountId, 2, pending[1])).toHaveLength(1);
+    const id = pending[0].id;
+    expect(store.indexBody(id, '请查收 [https://example.com/tracking] 报销单据。')).toBe(true);
+    expect(store.message(id)).toMatchObject({ preview: '请查收 报销单据。', cached: false });
+    expect(store.list(query('报销')).total).toBe(1);
+    expect(store.list(query('tracking')).total).toBe(1);
+    expect(store.pendingBodies(accountId).map(message => message.id)).not.toContain(id);
+    store.cacheBody(id, '完整邮件正文');
+    expect(store.indexBody(id, '较早完成的后台文本')).toBe(false);
+    expect(store.message(id)).toMatchObject({ preview: '完整邮件正文', cached: true });
+  });
+
+  it('counts unread messages once across provider labels and updates draft totals', () => {
+    const a = seedAccount(store); const b = seedAccount(store, 'bob@example.com');
+    store.applyBatch(a.inbox, [record(1, { remoteId: 'shared', flags: ['\\Flagged'] }), record(2, { flags: ['\\Seen'] })]);
+    store.applyBatch(b.inbox, [record(1)]);
+    expect(store.unreadCounts()).toMatchObject({ inbox: 2, all: 2, starred: 1, accounts: { [a.accountId]: 1, [b.accountId]: 1 } });
+    store.applyBatch(a.sent, [record(9, { remoteId: 'shared', flags: ['\\Seen', '\\Flagged'] })]);
+    expect(store.unreadCounts()).toMatchObject({ inbox: 1, all: 1, starred: 0 });
+    store.patchFlags(a.sent.id, 9, { seen: false });
+    expect(store.unreadCounts()).toMatchObject({ inbox: 2, all: 2, starred: 1, folders: { [a.inbox.id]: 1, [a.sent.id]: 1 } });
+    store.saveDraft('draft-a', draftSchema.parse({ accountId: a.accountId, subject: '', text: '' }));
+    store.saveDraft('draft-b', draftSchema.parse({ accountId: b.accountId, subject: '', text: '' }));
+    expect(store.unreadCounts().drafts).toBe(2);
+    store.deleteAccount(a.accountId);
+    expect(store.unreadCounts()).toMatchObject({ inbox: 1, drafts: 1 });
   });
 });

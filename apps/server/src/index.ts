@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { serve } from '@hono/node-server';
 import { MailStore } from '@mail/db';
-import { BodyCache, deriveKey, hashPassword, MailService, Vault } from '@mail/core';
+import { BodyCache, deriveKey, hashPassword, MailService, UploadStore, Vault } from '@mail/core';
 import { createApp } from './app';
 
 async function main() {
@@ -24,11 +24,11 @@ async function main() {
     store.setSetting('vault-check', vault.encrypt('mail-v1'));
     store.setSetting('password-hash', await hashPassword(config.password));
   }
-  const service = new MailService(store, vault, new BodyCache(join(config.dataDir, 'bodies')));
+  const service = new MailService(store, vault, new BodyCache(join(config.dataDir, 'bodies')), undefined, new UploadStore(store, join(config.dataDir, 'uploads')));
   const app = createApp({ service, passwordHash: store.getSetting('password-hash')!, port: config.port,
-    dev: config.dev, webRoot: resolve('apps/web/dist') });
+    dev: config.dev, webRoot: resolve('apps/web/dist'), docsRoot: existsSync(join(entryDir, 'docs')) ? join(entryDir, 'docs') : resolve('docs') });
   const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: config.port }, () => {
-    console.log(`Mail 已启动：http://127.0.0.1:${config.port}`);
+    console.log(`信屿 MailIsle 已启动：http://127.0.0.1:${config.port}`);
     service.start();
   });
   const shutdown = async () => { server.close(); await service.stop(); store.close(); process.exit(0); };

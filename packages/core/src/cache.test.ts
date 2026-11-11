@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { resolve, join } from 'node:path';
+import MailComposer from 'nodemailer/lib/mail-composer/index.js';
 import { BodyCache } from './cache';
 
 let directory: string;
@@ -28,4 +29,23 @@ it('extracts searchable text from HTML-only mail without including scripts or st
   expect(body.text).toContain('电子发票 & 合同');
   expect(body.text).not.toContain('tracking');
   expect(body.text).not.toContain('color:red');
+});
+
+it('keeps CID metadata on disk and supplies only raster images as data URLs', async () => {
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l5kAAAAASUVORK5CYII=', 'base64');
+  const source = await new MailComposer({ from: 'alice@example.com', to: 'bob@example.com',
+    html: '<img src="cid:logo@example.com"><img src="cid:vector@example.com">',
+    attachments: [
+      { filename: 'logo.png', content: png, contentType: 'image/png', cid: 'logo@example.com' },
+      { filename: 'vector.svg', content: '<svg></svg>', contentType: 'image/svg+xml', cid: 'vector@example.com' },
+    ] }).compile().build();
+  const cache = new BodyCache(directory);
+  const body = await cache.save('cid-message', source);
+  expect(body.inlineImages).toEqual([{ attachmentId: '0', contentId: 'logo@example.com', dataUrl: `data:image/png;base64,${png.toString('base64')}` }]);
+  expect(body.attachments[1].contentId).toBe('vector@example.com');
+  expect(await new BodyCache(directory).read('cid-message')).toEqual(body);
+  const stored = JSON.parse(await readFile(join(directory, 'cid-message', 'body.json'), 'utf8'));
+  expect(stored.cacheVersion).toBe(2);
+  expect(stored).not.toHaveProperty('inlineImages');
+  expect(await cache.attachment('cid-message', '0')).toEqual(png);
 });

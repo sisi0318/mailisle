@@ -35,7 +35,7 @@ beforeAll(async () => {
 });
 beforeEach(async () => {
   proxy = await faultProxy();
-  adapter = new ImapAdapter({ ...config, imap: { ...config.imap, port: proxy.port } });
+  adapter = new ImapAdapter({ ...config, imap: { ...config.imap, port: proxy.port } }, 2_000);
   await adapter.connect();
 });
 afterEach(async () => { await adapter?.close(); await proxy?.close(); });
@@ -65,12 +65,12 @@ it('releases queued operations after a silent-link timeout and reconnects on the
   try {
     const result = await Promise.race([
       pending,
-      new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error('Operations remained blocked after 110 seconds')), 110_000); }),
+      new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error('Operations remained blocked after 10 seconds')), 10_000); }),
     ]);
     const elapsedMs = performance.now() - start;
     expect(result.map(item => item.status)).toEqual(['rejected', 'rejected']);
-    expect(elapsedMs).toBeGreaterThanOrEqual(85_000);
-    expect(elapsedMs).toBeLessThan(110_000);
+    expect(elapsedMs).toBeGreaterThanOrEqual(1_500);
+    expect(elapsedMs).toBeLessThan(10_000);
     expect(proxy.connections).toBe(1);
     console.info(`Silent-link operations failed after ${Math.round(elapsedMs)} ms`);
     proxy.setFault('none');
@@ -84,7 +84,7 @@ it('releases queued operations after a silent-link timeout and reconnects on the
     await adapter.close();
     await pending;
   }
-}, 120_000);
+}, 20_000);
 
 // Injects SEARCH replies or discards traffic without closing either TCP socket.
 async function faultProxy() {

@@ -1,12 +1,16 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { mkdir, mkdtemp, rm, writeFile, readdir } from 'node:fs/promises';
+import { resolve, join } from 'node:path';
+import MailComposer from 'nodemailer/lib/mail-composer/index.js';
 import type { Folder, MoveReceipt } from '@mail/shared';
 import { accountConfig, database, record } from '../../../tests/fixtures';
 import { BodyCache } from './cache';
 import { Vault } from './crypto';
 import { MailService } from './service';
+import { UploadStore } from './uploads';
+import { accountUpdateSchema, draftSchema, sendSchema } from '@mail/shared';
 import type { MailAdapter, SyncSink } from './adapter';
+import type { AccountConfig } from './oauth';
 
 let store: ReturnType<typeof database>;
 let directory: string;
@@ -17,7 +21,7 @@ let sent: Folder;
 let messageId: string;
 let notify: () => void;
 let adapter: ReturnType<typeof serverAdapter>;
-let factory: ReturnType<typeof vi.fn<(config: ReturnType<typeof accountConfig>) => MailAdapter>>;
+let factory: ReturnType<typeof vi.fn<(config: AccountConfig) => MailAdapter>>;
 
 beforeEach(async () => {
   await mkdir('.test-artifacts', { recursive: true });
@@ -33,7 +37,7 @@ beforeEach(async () => {
   messageId = (store.sqlite.prepare('SELECT id FROM messages').get() as { id: string }).id;
   adapter = serverAdapter();
   factory = vi.fn(() => adapter);
-  service = new MailService(store, vault, new BodyCache(directory), factory);
+  service = new MailService(store, vault, new BodyCache(directory), factory, new UploadStore(store, join(directory, 'uploads')));
 });
 afterEach(async () => { await service.stop(); store.close(); await rm(directory, { recursive: true, force: true }); });
 
@@ -103,6 +107,125 @@ it('closes the reusable connection and listener when removing an account', async
   expect(store.account(accountId)).toBeUndefined();
 });
 
+it('hides saved passwords and proxy credentials, and preserves blank secrets during account editing', async () => {
+  const vault = new Vault(Buffer.alloc(32));
+  store.updateAccount(accountId, '测试', 'alice@example.com', vault.encrypt({ ...accountConfig(), proxy: 'socks5://proxy-user:proxy-secret@127.0.0.1:1080' }), false);
+  const settings = service.accountSettings(accountId);
+  expect(JSON.stringify(settings)).not.toContain('test-password');
+  expect(JSON.stringify(settings)).not.toContain('proxy-secret');
+  expect(settings.proxyDisplay).toBe('socks5://127.0.0.1:1080');
+  await service.updateAccount(accountId, accountUpdateSchema.parse({ ...settings, name: '新名称' }));
+  await service.sync(accountId);
+  const saved = vault.decrypt<ReturnType<typeof accountConfig>>(store.account(accountId)!.encryptedConfig);
+  expect(saved.imap.password).toBe('test-password'); expect(saved.smtp.password).toBe('test-password');
+  expect(saved.proxy).toContain('proxy-secret'); expect(saved.name).toBe('新名称');
+  expect(store.message(messageId)).toBeDefined();
+});
+
+it('does not replace a working account when validation of new credentials fails', async () => {
+  await service.sync(accountId);
+  const candidate = serverAdapter();
+  candidate.verifySmtp.mockRejectedValueOnce(new Error('bad SMTP credentials'));
+  factory.mockImplementationOnce(() => candidate);
+  const before = store.account(accountId)!.encryptedConfig;
+  await expect(service.updateAccount(accountId, accountUpdateSchema.parse({ ...service.accountSettings(accountId), name: '失败设置' }))).rejects.toThrow('SMTP');
+  expect(store.account(accountId)?.encryptedConfig).toBe(before);
+  expect(store.message(messageId)).toBeDefined(); expect(candidate.close).toHaveBeenCalledOnce();
+  expect(adapter.close).not.toHaveBeenCalled();
+});
+
+it('rebuilds mailbox mappings after changing IMAP identity while retaining local drafts', async () => {
+  const draft = await service.saveDraft(undefined, draftSchema.parse({ accountId, subject: '保留草稿', text: '' }));
+  const settings = service.accountSettings(accountId);
+  await service.updateAccount(accountId, accountUpdateSchema.parse({ ...settings, imap: { ...settings.imap, user: 'another@example.com' } }));
+  await service.sync(accountId);
+  expect(store.message(messageId)).toBeUndefined();
+  expect(service.getDraft(draft.id).subject).toBe('保留草稿');
+  expect(store.folders(accountId).find(folder => folder.path === 'INBOX')?.id).not.toBe(inbox.id);
+});
+
+it('persists incomplete draft addresses and upload bytes, then removes only unreferenced files', async () => {
+  const file = await service.uploads!.save('../../outside.txt', 'text/plain', Buffer.from('附件内容'));
+  const saved = await service.saveDraft(undefined, draftSchema.parse({ accountId, to: '未写完@', subject: '', text: '', attachmentIds: [file.id] }));
+  expect(service.getDraft(saved.id).to).toBe('未写完@');
+  expect(service.getDraft(saved.id).attachments[0].filename).toBe('../../outside.txt');
+  expect(await readdir(join(directory, 'uploads'))).toEqual([`${file.id}.bin`]);
+  await service.uploads!.removeUnused([file.id]); expect(store.upload(file.id)).toBeDefined();
+  await service.saveDraft(saved.id, { ...saved, attachmentIds: [] });
+  expect(store.upload(file.id)).toBeUndefined(); expect(await readdir(join(directory, 'uploads'))).toEqual([]);
+});
+
+it('keeps a draft after SMTP failure and removes it only after acceptance', async () => {
+  const file = await service.uploads!.save('合同.txt', 'text/plain', Buffer.from('合同附件'));
+  const draft = await service.saveDraft(undefined, draftSchema.parse({ accountId, to: 'bob@example.com', subject: '合同', text: '见附件', attachmentIds: [file.id] }));
+  const send = sendSchema.parse({ ...draft, to: ['bob@example.com'], cc: [], bcc: [], draftId: draft.id });
+  adapter.send.mockRejectedValueOnce(new Error('SMTP rejected'));
+  await expect(service.send(send)).rejects.toThrow('SMTP');
+  expect(store.draft(draft.id)).toBeDefined(); expect(store.upload(file.id)).toBeDefined();
+  await service.send(send);
+  expect(adapter.send.mock.calls[1]?.[2]).toEqual([{ filename: '合同.txt', mimeType: 'text/plain', content: Buffer.from('合同附件') }]);
+  expect(store.draft(draft.id)).toBeUndefined(); expect(store.upload(file.id)).toBeUndefined();
+});
+
+it('cleans expired orphan uploads without deleting draft attachments', async () => {
+  const orphan = await service.uploads!.save('orphan.txt', 'text/plain', Buffer.from('old'));
+  const kept = await service.uploads!.save('saved.txt', 'text/plain', Buffer.from('saved'));
+  await service.saveDraft(undefined, draftSchema.parse({ accountId, text: '', subject: '', attachmentIds: [kept.id] }));
+  store.sqlite.prepare('UPDATE uploads SET created_at = 0').run();
+  await service.uploads!.cleanup();
+  expect(store.upload(orphan.id)).toBeUndefined(); expect(store.upload(kept.id)).toBeDefined();
+});
+
+it('uses a separate background adapter so opening and marking mail do not wait for prefetch', async () => {
+  const background = serverAdapter();
+  const entered = deferred(); const release = deferred();
+  background.bodyText.mockImplementation(async () => { entered.resolve(); await release.promise; return '后台正文'; });
+  background.close.mockImplementation(async () => { release.resolve(); });
+  factory.mockImplementationOnce(() => adapter).mockImplementation(() => background);
+  service.start();
+  try {
+    await entered.promise;
+    expect((await service.body(messageId)).text).toContain('缓存正文');
+    await service.flags(messageId, { seen: true });
+    expect(store.message(messageId)).toMatchObject({ seen: true, cached: true });
+    expect(adapter.source).toHaveBeenCalledOnce();
+    expect(adapter.flags).toHaveBeenCalledOnce();
+    expect(background.source).not.toHaveBeenCalled();
+    expect(factory).toHaveBeenCalledTimes(2);
+  } finally { release.resolve(); await service.stop(); }
+});
+
+it('returns an old CID cache without waiting for an unavailable network', async () => {
+  await legacyCidCache();
+  let fail!: (error: Error) => void;
+  adapter.source.mockImplementationOnce(() => new Promise<Buffer<ArrayBuffer>>((_, reject) => { fail = reject; }));
+  try {
+    expect((await service.body(messageId)).text).toBe('旧缓存正文');
+    await vi.waitFor(() => expect(adapter.source).toHaveBeenCalledOnce());
+  } finally { fail(new Error('offline')); }
+});
+
+it('upgrades an old CID cache once and tells the reader to refresh', async () => {
+  await legacyCidCache();
+  const source = await new MailComposer({ from: 'alice@example.com', to: 'bob@example.com', html: '<img src="cid:logo">',
+    attachments: [{ filename: 'logo.png', content: Buffer.from('iVBORw0KGgo=', 'base64'), contentType: 'image/png', cid: 'logo' }] }).compile().build();
+  adapter.source.mockResolvedValue(Buffer.from(source));
+  const update = vi.fn(); service.events.on('update', update);
+  expect((await service.body(messageId)).text).toBe('旧缓存正文');
+  await vi.waitFor(() => expect(update).toHaveBeenCalledWith({ type: 'change', accountId, messageId, contentOnly: true }));
+  const upgraded = await service.body(messageId);
+  expect(upgraded.inlineImages).toHaveLength(1);
+  expect(await service.body(messageId)).toEqual(upgraded);
+  expect(adapter.source).toHaveBeenCalledOnce();
+});
+
+async function legacyCidCache() {
+  const target = join(directory, messageId);
+  await mkdir(target, { recursive: true });
+  await writeFile(join(target, 'body.json'), JSON.stringify({ text: '旧缓存正文', html: '<img src="cid:logo">', attachments: [] }));
+  store.cacheBody(messageId, '旧缓存正文');
+}
+
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>(done => { resolve = done; });
@@ -119,8 +242,10 @@ function serverAdapter() {
       return { cursor: { uidValidity: '1', uidNext: 2, modseq: null }, uids: folder.path === 'INBOX' ? [1] : [] };
     }),
     source: vi.fn(async () => Buffer.from('Content-Type: text/plain; charset=utf-8\r\n\r\n缓存正文')),
+    bodyText: vi.fn(async () => '后台索引正文'),
+    copyRecipients: vi.fn(async () => []),
     flags: vi.fn(async () => {}), move: vi.fn(async (): Promise<MoveReceipt> => ({ uid: 10, uidValidity: '1' })),
-    send: vi.fn(async () => ({ messageId: '<sent>' })),
+    send: vi.fn<MailAdapter['send']>(async () => ({ messageId: '<sent>' })),
     watchInbox: vi.fn(async (onChange: () => void) => { notify = onChange; return stopWatch; }), stopWatch,
   };
 }

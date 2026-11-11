@@ -1,12 +1,14 @@
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { and, eq, inArray, lt, sql } from 'drizzle-orm';
+import { and, eq, getTableColumns, inArray, lt, sql } from 'drizzle-orm';
 import { mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Account, Cursor, FlagUpdate, Folder, FolderRole, ListInput, MailFlags, MailMetadata, Message, MessagePage, MoveReceipt } from '@mail/shared';
+import type { Account, Cursor, DraftInput, DraftSummary, FlagUpdate, Folder, FolderRole, ListInput, MailFlags, MailMetadata, Message, MessagePage, MoveReceipt, UnreadCounts, Upload } from '@mail/shared';
 import * as schema from './schema';
-import { searchExpression, tokenize } from './search';
+import { previewText, searchExpression, tokenize } from './search';
+
+const { bodyText: _bodyText, ...messageColumns } = getTableColumns(schema.messages);
 
 export class MailStore {
   readonly sqlite: Database.Database;
@@ -44,6 +46,61 @@ export class MailStore {
     return id;
   }
   deleteAccount(id: string) { this.db.delete(schema.accounts).where(eq(schema.accounts.id, id)).run(); }
+  updateAccountCredentials(id: string, encryptedConfig: string) {
+    this.db.update(schema.accounts).set({ encryptedConfig }).where(eq(schema.accounts.id, id)).run();
+  }
+  updateAccount(id: string, name: string, email: string, encryptedConfig: string, resetMailbox: boolean) {
+    this.sqlite.transaction(() => {
+      if (resetMailbox) {
+        this.db.delete(schema.folders).where(eq(schema.folders.accountId, id)).run();
+        this.db.delete(schema.messages).where(eq(schema.messages.accountId, id)).run();
+        this.db.delete(schema.threadKeys).where(eq(schema.threadKeys.accountId, id)).run();
+      }
+      this.db.update(schema.accounts).set({ name, email, encryptedConfig, error: null, ...(resetMailbox ? { lastSync: null } : {}) }).where(eq(schema.accounts.id, id)).run();
+    })();
+  }
+  upload(id: string) { return this.db.select().from(schema.uploads).where(eq(schema.uploads.id, id)).get(); }
+  addUpload(upload: Upload) { this.db.insert(schema.uploads).values(upload).run(); }
+  removeUpload(id: string) { this.db.delete(schema.uploads).where(eq(schema.uploads.id, id)).run(); }
+  uploadInUse(id: string) { return !!this.sqlite.prepare('SELECT 1 FROM drafts d, json_each(d.attachment_ids) a WHERE a.value = ? LIMIT 1').get(id); }
+  unusedUploads(before: number) {
+    return this.db.select().from(schema.uploads).where(sql`created_at < ${before} AND NOT EXISTS (SELECT 1 FROM drafts d, json_each(d.attachment_ids) a WHERE a.value = uploads.id)`).all();
+  }
+  draft(id: string) { return this.db.select().from(schema.drafts).where(eq(schema.drafts.id, id)).get(); }
+  drafts(accountId?: string): DraftSummary[] {
+    return this.db.select({ id: schema.drafts.id, accountId: schema.drafts.accountId, to: schema.drafts.to, subject: schema.drafts.subject,
+      updatedAt: schema.drafts.updatedAt, attachmentCount: sql<number>`json_array_length(attachment_ids)` }).from(schema.drafts)
+      .where(accountId ? eq(schema.drafts.accountId, accountId) : undefined).orderBy(sql`updated_at DESC`).all();
+  }
+  saveDraft(id: string, input: DraftInput) {
+    const values = { ...input, html: input.html ?? null, inReplyTo: input.inReplyTo ?? null, updatedAt: Date.now() };
+    this.db.insert(schema.drafts).values({ id, ...values }).onConflictDoUpdate({ target: schema.drafts.id, set: values }).run();
+  }
+  deleteDraft(id: string) { this.db.delete(schema.drafts).where(eq(schema.drafts.id, id)).run(); }
+  unreadCounts(): UnreadCounts {
+    const rows = this.sqlite.prepare(`WITH unread AS MATERIALIZED (
+      SELECT id, account_id FROM messages m WHERE NOT EXISTS (
+        SELECT 1 FROM locations l, json_each(l.flags) flag WHERE l.message_id = m.id AND flag.value = ?
+      )
+    ), inbox AS (
+      SELECT DISTINCT u.id, u.account_id FROM unread u JOIN locations l ON l.message_id = u.id JOIN folders f ON f.id = l.folder_id WHERE f.role = 'inbox'
+    )
+    SELECT 'folder' kind,l.folder_id key,count(DISTINCT u.id) n FROM unread u JOIN locations l ON l.message_id=u.id GROUP BY l.folder_id
+    UNION ALL SELECT 'account',account_id,count(*) FROM inbox GROUP BY account_id
+    UNION ALL SELECT 'view','inbox',count(*) FROM inbox
+    UNION ALL SELECT 'view','all',count(*) FROM unread
+    UNION ALL SELECT 'view','starred',count(*) FROM unread u WHERE EXISTS (
+      SELECT 1 FROM locations l,json_each(l.flags) flag WHERE l.message_id=u.id AND flag.value=?
+    )
+    UNION ALL SELECT 'view','drafts',count(*) FROM drafts`).all('\\Seen', '\\Flagged') as { kind: string; key: string; n: number }[];
+    const counts: UnreadCounts = { inbox: 0, all: 0, starred: 0, drafts: 0, accounts: {}, folders: {} };
+    for (const row of rows) {
+      if (row.kind === 'folder') counts.folders[row.key] = row.n;
+      else if (row.kind === 'account') counts.accounts[row.key] = row.n;
+      else counts[row.key as 'inbox' | 'all' | 'starred' | 'drafts'] = row.n;
+    }
+    return counts;
+  }
   syncStatus(id: string, error: string | null) {
     this.db.update(schema.accounts).set(error ? { error } : { error: null, lastSync: Date.now() }).where(eq(schema.accounts.id, id)).run();
   }
@@ -162,24 +219,39 @@ export class MailStore {
     }
     const where = and(...conditions);
     const total = this.db.select({ count: sql<number>`count(*)` }).from(schema.messages).where(where).get()!.count;
-    const rows = this.db.select().from(schema.messages).where(where).orderBy(sql`date DESC, id DESC`).limit(input.limit).offset(input.offset).all();
+    const rows = this.db.select(messageColumns).from(schema.messages).where(where).orderBy(sql`date DESC, id DESC`).limit(input.limit).offset(input.offset).all();
     return { messages: rows.map(row => this.toMessage(row)), total, nextOffset: input.offset + rows.length < total ? input.offset + rows.length : null };
   }
   message(id: string): Message | undefined {
-    const row = this.db.select().from(schema.messages).where(eq(schema.messages.id, id)).get();
+    const row = this.db.select(messageColumns).from(schema.messages).where(eq(schema.messages.id, id)).get();
     return row && this.toMessage(row);
   }
   thread(id: string): Message[] {
-    return this.db.select().from(schema.messages).where(eq(schema.messages.threadId, id)).orderBy(schema.messages.date).all().map(row => this.toMessage(row));
+    return this.db.select(messageColumns).from(schema.messages).where(eq(schema.messages.threadId, id)).orderBy(schema.messages.date).all().map(row => this.toMessage(row));
   }
   messageLocations(id: string) {
     return this.db.select({ folder: schema.folders, uid: schema.locations.uid, flags: schema.locations.flags }).from(schema.locations)
       .innerJoin(schema.folders, eq(schema.folders.id, schema.locations.folderId)).where(eq(schema.locations.messageId, id)).all();
   }
   cacheBody(id: string, text: string) {
-    this.sqlite.transaction(() => {
-      this.db.update(schema.messages).set({ bodyText: text, preview: text.replace(/\s+/g, ' ').slice(0, 180), cached: true }).where(eq(schema.messages.id, id)).run();
-      this.indexMessage(id);
+    return this.writeBodyText(id, text, true);
+  }
+  indexBody(id: string, text: string) {
+    return this.writeBodyText(id, text, false);
+  }
+  pendingBodies(accountId: string, limit = 20, before?: { date: number; id: string }) {
+    return this.db.select({ id: schema.messages.id, date: schema.messages.date }).from(schema.messages).where(and(
+      eq(schema.messages.accountId, accountId), eq(schema.messages.bodyIndexed, false),
+      before ? sql`(date, id) < (${before.date}, ${before.id})` : undefined,
+    )).orderBy(sql`date DESC, id DESC`).limit(limit).all();
+  }
+  private writeBodyText(id: string, text: string, complete: boolean) {
+    return this.sqlite.transaction(() => {
+      const result = this.db.update(schema.messages).set({ bodyText: text, preview: previewText(text), bodyIndexed: true,
+        ...(complete ? { cached: true } : {}) }).where(and(eq(schema.messages.id, id),
+        complete ? undefined : eq(schema.messages.bodyIndexed, false))).run();
+      if (result.changes) this.indexMessage(id);
+      return result.changes > 0;
     })();
   }
   private indexMessage(id: string) {
@@ -206,11 +278,11 @@ export class MailStore {
     for (const reference of refs) this.db.insert(schema.threadKeys).values({ accountId, reference, threadId }).onConflictDoNothing().run();
     return threadId;
   }
-  private toMessage(row: typeof schema.messages.$inferSelect): Message {
+  private toMessage(row: Omit<typeof schema.messages.$inferSelect, 'bodyText'>): Message {
     const flags = this.messageLocations(row.id).flatMap(location => location.flags);
     return { id: row.id, accountId: row.accountId, messageId: row.messageId, references: row.references,
       threadId: row.threadId, subject: row.subject, from: row.from, to: row.to, replyTo: row.replyTo, date: row.date,
-      preview: row.preview, cached: row.cached, seen: flags.includes('\\Seen'), starred: flags.includes('\\Flagged') };
+      preview: previewText(row.preview), cached: row.cached, seen: flags.includes('\\Seen'), starred: flags.includes('\\Flagged') };
   }
   private removeOrphans() {
     this.sqlite.exec('DELETE FROM messages WHERE NOT EXISTS (SELECT 1 FROM locations WHERE locations.message_id = messages.id)');

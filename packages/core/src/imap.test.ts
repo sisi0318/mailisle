@@ -6,6 +6,12 @@ import type { Folder } from '@mail/shared';
 
 afterEach(() => vi.restoreAllMocks());
 
+it('keeps the production worker inactivity timeout at 90 seconds', async () => {
+  const adapter = new ImapAdapter(accountConfig());
+  expect(adapter.socketTimeoutMs).toBe(90_000);
+  await adapter.close();
+});
+
 it.each(['\\NoSelect', '\\Noselect', '\\NOSELECT'])('skips %s containers while keeping their selectable children', async noSelect => {
   vi.spyOn(ImapFlow.prototype, 'list').mockResolvedValue([
     { path: 'INBOX', pathAsListed: 'INBOX', name: 'INBOX', delimiter: '/', parent: [], parentPath: '', flags: new Set(['\\HasNoChildren']), listed: true, subscribed: true },

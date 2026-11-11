@@ -1,17 +1,21 @@
-import { ImapFlow, type FetchMessageObject } from 'imapflow';
+import { ImapFlow, type FetchMessageObject, type MessageStructureObject } from 'imapflow';
 import nodemailer from 'nodemailer';
 import MailComposer from 'nodemailer/lib/mail-composer/index.js';
 import type SMTPTransport from 'nodemailer/lib/smtp-transport/index.js';
 import * as socks from 'socks';
 import PostalMime from 'postal-mime';
-import type { AccountInput, Address, FlagUpdate, Folder, FolderRole, MailMetadata, SendInput } from '@mail/shared';
+import { convert } from 'html-to-text';
+import type { Address, FlagUpdate, Folder, FolderRole, MailMetadata, SendInput } from '@mail/shared';
 import type { MailAdapter, SyncSink } from './adapter';
+import type { OutgoingAttachment } from './uploads';
+import type { AccountConfig } from './oauth';
 
 export class ImapAdapter implements MailAdapter {
   private client: ImapFlow;
   private connecting?: Promise<void>;
   private connectionAttempted = false;
-  constructor(private account: AccountInput) {
+  private closed = false;
+  constructor(private account: AccountConfig, readonly socketTimeoutMs = 90_000, private accessToken?: () => Promise<string>) {
     this.client = this.newClient();
   }
   async connect() {
@@ -22,15 +26,24 @@ export class ImapAdapter implements MailAdapter {
       this.client = this.newClient();
     }
     this.connectionAttempted = true;
-    this.connecting = this.client.connect().then(() => {}).finally(() => { this.connecting = undefined; });
+    this.closed = false;
+    this.connecting = (async () => {
+      if (this.accessToken) {
+        const token = await this.accessToken();
+        if (this.closed) throw new Error('邮箱连接已关闭');
+        this.client.close(); this.client = this.newClient(false, token);
+      }
+      await this.login(this.client);
+    })().finally(() => { this.connecting = undefined; });
     return this.connecting;
   }
   async verifySmtp() {
-    const transport = this.smtp();
+    const transport = await this.smtp();
     try { await transport.verify(); }
+    catch (error) { throw this.smtpError(error); }
     finally { transport.close(); }
   }
-  async close() { this.client.close(); }
+  async close() { this.closed = true; this.client.close(); }
   async listFolders() {
     // IMAP flags are case-insensitive; QQ uses \\NoSelect for container folders.
     return (await this.client.list()).filter(folder => ![...folder.flags].some(flag => flag.toLowerCase() === '\\noselect')).map(folder => ({
@@ -87,6 +100,32 @@ export class ImapAdapter implements MailAdapter {
       return message.source;
     } finally { lock.release(); }
   }
+  async bodyText(folder: Folder, uid: number) {
+    const lock = await this.lockCurrent(folder);
+    try {
+      const message = await this.client.fetchOne(uid, { bodyStructure: true }, { uid: true });
+      if (!message || !message.bodyStructure) throw new Error('无法读取邮件正文结构');
+      const parts = textParts(message.bodyStructure);
+      const texts: string[] = [];
+      for (const part of parts) {
+        const content = part.part || 'TEXT';
+        const fetched = await this.client.fetchOne(uid, { bodyParts: [content] }, { uid: true, binary: false });
+        const bytes = fetched && fetched.bodyParts?.get(content.toLowerCase());
+        if (!bytes) throw new Error('邮件正文未完整返回，稍后会重新预取');
+        const parsed = await decodeTextPart(part, bytes);
+        texts.push(parsed.text ?? convert(parsed.html ?? '', { wordwrap: false }));
+      }
+      return texts.join('\n');
+    } finally { lock.release(); }
+  }
+  async copyRecipients(folder: Folder, uid: number) {
+    const lock = await this.lockCurrent(folder);
+    try {
+      const message = await this.client.fetchOne(uid, { envelope: true }, { uid: true });
+      if (!message) throw new Error('无法读取原邮件抄送信息，请同步后重试');
+      return (message.envelope?.cc ?? []).map(address => ({ name: address.name ?? '', address: address.address ?? '' }));
+    } finally { lock.release(); }
+  }
   async flags(folder: Folder, uid: number, update: FlagUpdate) {
     const lock = await this.lockCurrent(folder);
     try {
@@ -107,15 +146,16 @@ export class ImapAdapter implements MailAdapter {
     }
     finally { lock.release(); }
   }
-  async send(input: SendInput, sentPath?: string) {
+  async send(input: SendInput, sentPath?: string, attachments: OutgoingAttachment[] = []) {
     if (this.account.sentCopy === 'append' && !sentPath) throw new Error('请先在邮箱中创建已发送文件夹，并同步后再发送');
     const message = new MailComposer({
       from: { name: this.account.name, address: this.account.email }, to: input.to, cc: input.cc,
       subject: input.subject, text: input.text, html: input.html,
       inReplyTo: input.inReplyTo, references: input.references, disableFileAccess: true, disableUrlAccess: true,
+      attachments: attachments.map(file => ({ filename: file.filename, content: file.content, contentType: file.mimeType })),
     }).compile();
     const raw = await message.build();
-    const transport = this.smtp();
+    const transport = await this.smtp();
     try {
       const result = await transport.sendMail({
         envelope: { from: this.account.email, to: [...input.to, ...input.cc, ...input.bcc] }, raw,
@@ -127,10 +167,13 @@ export class ImapAdapter implements MailAdapter {
         catch { warnings.push('邮件已发送，但保存已发送副本失败。请勿重复发送。'); }
       }
       return { messageId: result.messageId, ...(warnings.length ? { warning: warnings.join(' ') } : {}) };
-    } finally { transport.close(); }
+    } catch (error) { throw this.smtpError(error); }
+    finally { transport.close(); }
   }
   async watchInbox(onChange: () => void, onError: (error: Error) => void) {
-    const client = this.newClient(true);
+    const token = this.accessToken ? await this.accessToken() : undefined;
+    if (this.closed) throw new Error('邮箱连接已关闭');
+    const client = this.newClient(true, token);
     let stopped = false;
     client.on('error', onError);
     client.on('close', () => { if (!stopped) onError(new Error('收件箱监听连接已断开，将在轮询时重新连接')); });
@@ -138,7 +181,7 @@ export class ImapAdapter implements MailAdapter {
     client.on('flags', onChange);
     client.on('expunge', onChange);
     try {
-      await client.connect();
+      await this.login(client);
       await client.mailboxOpen('INBOX');
       void client.idle().catch(error => { if (!stopped) onError(error); });
     } catch (error) { stopped = true; client.close(); throw error; }
@@ -152,26 +195,38 @@ export class ImapAdapter implements MailAdapter {
     }
     return lock;
   }
-  private newClient(watch = false) {
+  private newClient(watch = false, accessToken?: string) {
     const server = this.account.imap;
     const client = new ImapFlow({
       host: server.host, port: server.port, secure: server.security === 'tls',
       ...(server.security !== 'tls' ? { doSTARTTLS: server.security === 'starttls' } : {}),
-      auth: { user: server.user, pass: server.password }, proxy: this.account.proxy,
-      clientInfo: { name: 'Mail', version: '0.1.0', vendor: 'Mail' },
+      auth: accessToken ? { user: server.user, accessToken } : { user: server.user, pass: server.password }, proxy: this.account.proxy,
+      clientInfo: { name: 'MailIsle', version: '0.1.0', vendor: 'MailIsle' },
       logger: false, disableAutoIdle: !watch, maxIdleTime: 25 * 60_000, connectionTimeout: 20_000, greetingTimeout: 20_000,
       // The worker must stay alive between 60-second polling cycles.
-      socketTimeout: watch ? undefined : 90_000,
+      socketTimeout: watch ? undefined : this.socketTimeoutMs,
     });
     client.on('error', () => { /* Command promises report errors; the next operation reconnects. */ });
     return client;
   }
-  private smtp() {
+  private async login(client: ImapFlow) {
+    try { await client.connect(); }
+    catch (error) {
+      if (this.accessToken && (error as { authenticationFailed?: boolean }).authenticationFailed)
+        throw new Error('邮箱 OAuth 登录未通过，请到邮箱设置重新授权，并确认 IMAP 已开启');
+      throw error;
+    }
+  }
+  private smtpError(error: unknown) {
+    return this.accessToken && (error as { code?: string })?.code === 'EAUTH'
+      ? new Error('邮箱 OAuth 发信登录未通过，请重新授权，并确认 SMTP AUTH 已开启及组织允许该权限') : error;
+  }
+  private async smtp() {
     const server = this.account.smtp;
     const options: SMTPTransport.Options & { proxy?: string; disableFileAccess: boolean; disableUrlAccess: boolean } = {
       host: server.host, port: server.port, secure: server.security === 'tls',
       requireTLS: server.security === 'starttls', ignoreTLS: server.security === 'plain',
-      auth: { user: server.user, pass: server.password }, proxy: this.account.proxy,
+      auth: this.accessToken ? { type: 'OAuth2', user: server.user, accessToken: await this.accessToken() } : { user: server.user, pass: server.password }, proxy: this.account.proxy,
       connectionTimeout: 20_000, greetingTimeout: 20_000, socketTimeout: 60_000,
       disableFileAccess: true, disableUrlAccess: true,
     };
@@ -179,6 +234,25 @@ export class ImapAdapter implements MailAdapter {
     transport.set('proxy_socks_module', socks);
     return transport;
   }
+}
+
+function textParts(node: MessageStructureObject): MessageStructureObject[] {
+  if (node.disposition === 'attachment' || node.type === 'message/rfc822') return [];
+  if (node.type === 'text/plain' || node.type === 'text/html') return [node];
+  const children = (node.childNodes ?? []).map(textParts);
+  if (node.type === 'multipart/alternative') {
+    return children.find(parts => parts.some(part => part.type === 'text/plain')) ?? children.find(parts => parts.length > 0) ?? [];
+  }
+  return children.flat();
+}
+
+function decodeTextPart(part: MessageStructureObject, bytes: Buffer) {
+  const encoding = (part.encoding ?? '7bit').toLowerCase();
+  if (!['7bit', '8bit', 'binary', 'base64', 'quoted-printable'].includes(encoding)) throw new Error('邮件正文使用了暂不支持的传输编码');
+  const parameters = ['charset', 'format', 'delsp'].flatMap(name => part.parameters?.[name]
+    ? [`${name}=${JSON.stringify(part.parameters[name])}`] : []);
+  const headers = [`Content-Type: ${[part.type, ...parameters].join('; ')}`, `Content-Transfer-Encoding: ${encoding}`, '', ''].join('\r\n');
+  return PostalMime.parse(Buffer.concat([Buffer.from(headers), bytes]));
 }
 
 function folderRole(path: string, specialUse?: string): FolderRole {

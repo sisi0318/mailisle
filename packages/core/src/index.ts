@@ -3,3 +3,7 @@ export * from './cache';
 export * from './crypto';
 export * from './imap';
 export * from './service';
+export * from './uploads';
+export * from './autoconfig';
+export * from './oauth';
+export * from './oauth-flow';

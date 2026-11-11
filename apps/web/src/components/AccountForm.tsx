@@ -1,9 +1,11 @@
-import { useState, type FormEvent } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { accountSchema, detectProvider, providerPresets, type AccountInput } from '@mail/shared';
+import { useEffect, useState, type FormEvent } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { accountSchema, accountUpdateSchema, detectProvider, providerPresets, type AccountInput, type AccountSettings, type AccountUpdate, type AutoConfig } from '@mail/shared';
 import { api, json } from '../api';
 import { describeIssues } from '../format';
 import { Button, Modal } from './ui';
+import { oauthStartSchema, type OAuthStarted, type OAuthStart, type OAuthClientSettings } from '@mail/shared';
+import { OAuthAuthorization, OAuthClientFields } from './OAuth';
 
 const labels = {
   name: '显示名称', email: '邮箱地址', proxy: '代理地址', sentCopy: '已发送副本',
@@ -11,71 +13,103 @@ const labels = {
   'smtp.host': 'SMTP 服务器', 'smtp.port': 'SMTP 端口', 'smtp.security': 'SMTP 加密方式', 'smtp.user': 'SMTP 登录名', 'smtp.password': '发信密码',
 };
 
-export function AccountForm({ onClose }: { onClose: () => void }) {
+export function AccountForm({ accountId, onClose, onSaved }: { accountId?: string; onClose: () => void; onSaved?: (id: string) => void }) {
+  const settings = useQuery({ queryKey: ['account-settings', accountId], queryFn: () => api<AccountSettings>(`/accounts/${accountId}`), enabled: !!accountId, staleTime: Infinity, refetchOnWindowFocus: false });
+  if (accountId && !settings.data) return <Modal title="邮箱设置" onClose={onClose}>
+    {settings.error ? <p role="alert" className="error">{settings.error.message}</p> : <p className="loading">正在读取设置…</p>}
+  </Modal>;
+  return <AccountEditor key={accountId ?? 'new'} accountId={accountId} settings={settings.data} onClose={onClose} onSaved={onSaved} />;
+}
+
+function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: string; settings?: AccountSettings; onClose: () => void; onSaved?: (id: string) => void }) {
   const query = useQueryClient();
   const [error, setError] = useState('');
-  const [email, setEmail] = useState('');
-  const [providerId, setProviderId] = useState('auto');
-  // Server settings stay folded away while a preset fills them in; null means the user has not chosen either way.
-  const [serversOpen, setServersOpen] = useState<boolean | null>(null);
-  const detectedProvider = detectProvider(email);
-  const provider = providerId === 'auto' ? detectedProvider : providerPresets.find(item => item.id === providerId);
-  const add = useMutation({ mutationFn: (input: AccountInput) => api('/accounts', json('POST', input)),
-    onSuccess: () => { void query.invalidateQueries(); onClose(); } });
-
+  const [email, setEmail] = useState(settings?.email ?? '');
+  const [providerId, setProviderId] = useState(settings ? 'custom' : 'auto');
+  const [serversOpen, setServersOpen] = useState<boolean | null>(settings ? true : null);
+  const [discovered, setDiscovered] = useState<AutoConfig | null>(null);
+  const [discoveryVersion, setDiscoveryVersion] = useState(0);
+  const [clearProxy, setClearProxy] = useState(false);
+  const [authMode, setAuthMode] = useState(settings?.oauth ? 'oauth' : settings ? 'password' : 'auto');
+  const [clientSource, setClientSource] = useState(settings?.oauth ? 'saved' : 'automatic');
+  const [authorization, setAuthorization] = useState<OAuthStarted | null>(null);
+  const [authorizing, setAuthorizing] = useState(false);
+  const detected = detectProvider(email);
+  const provider = providerId === 'auto' ? detected : providerPresets.find(item => item.id === providerId);
+  const preset = providerId === 'discovered' ? discovered : provider;
+  const providerHints = provider ?? (providerId === 'discovered' ? providerPresets.find(item => item.imap.host === discovered?.imap.host && item.smtp.host === discovered?.smtp.host) : undefined);
+  const oauthProvider = provider?.id === 'gmail' || (providerId === 'discovered' && discovered?.imap.host === 'imap.gmail.com') ? 'google'
+    : ['outlook', 'microsoft365'].includes(provider?.id ?? '') || (providerId === 'discovered' && discovered?.imap.host === 'outlook.office365.com') ? 'microsoft' : settings?.oauth?.provider;
+  const useOAuth = !!oauthProvider && (authMode !== 'password' || !!preset?.requiresOAuth);
+  const blocked = !!preset?.requiresOAuth && !oauthProvider;
+  const clients = useQuery({ queryKey: ['oauth-clients'], queryFn: () => api<OAuthClientSettings>('/oauth/clients'), enabled: useOAuth });
+  const start = useMutation({ mutationFn: (input: OAuthStart) => api<OAuthStarted>('/oauth/start', json('POST', input)), onSuccess: setAuthorization });
+  useEffect(() => () => { if (authorization) void api(`/oauth/sessions/${authorization.id}`, json('DELETE', {})).catch(() => {}); }, [authorization]);
+  function saved(id: string) { query.removeQueries({ queryKey: ['account-settings', accountId] }); void query.invalidateQueries(); onSaved?.(id); onClose(); }
+  const save = useMutation({ mutationFn: (input: AccountInput | AccountUpdate) => api<{ id?: string }>(accountId ? `/accounts/${accountId}` : '/accounts', json(accountId ? 'PUT' : 'POST', input)),
+    onSuccess: result => { const id = accountId ?? result.id; if (id) saved(id); } });
+  const discover = useMutation({ mutationFn: (address: string) => api<{ config: AutoConfig | null }>('/autoconfig', json('POST', { email: address.trim() })),
+    onSuccess: ({ config }, address) => {
+      if (email.trim().toLowerCase() !== address.trim().toLowerCase()) return;
+      if (!config) { setError('没有找到支持加密连接的 IMAP/SMTP 配置，请手动填写。'); return; }
+      setDiscovered(config); setDiscoveryVersion(version => version + 1); setProviderId('discovered'); setServersOpen(true); setError(''); save.reset();
+    } });
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const value = (key: string) => String(form.get(key) ?? '').trim();
-    const server = (protocol: 'imap' | 'smtp') => ({ host: value(`${protocol}Host`), port: Number(value(`${protocol}Port`)),
-      security: value(`${protocol}Security`), user: value(`${protocol}User`) || value('email'), password: String(form.get(`${protocol}Password`) || form.get('password')) });
-    const result = accountSchema.safeParse({ name: value('name') || provider?.name || value('email'), email: value('email'), imap: server('imap'), smtp: server('smtp'),
-      proxy: value('proxy') || undefined, sentCopy: value('sentCopy') });
-    if (!result.success) { setServersOpen(true); setError(describeIssues(result.error.issues, labels)); return; }
-    setError('');
-    add.mutate(result.data);
+    const password = String(form.get('password') ?? '');
+    const server = (protocol: 'imap' | 'smtp') => ({ host: value(`${protocol}Host`), port: Number(value(`${protocol}Port`)), security: value(`${protocol}Security`),
+      user: value(`${protocol}User`) || value('email'), password: String(form.get(`${protocol}Password`) || password) || (accountId ? undefined : '') });
+    const account = { name: value('name') || preset?.name || value('email'), email: value('email'),
+      imap: server('imap'), smtp: server('smtp'), proxy: clearProxy ? '' : value('proxy') || undefined, sentCopy: value('sentCopy') };
+    if (useOAuth && oauthProvider && (event.nativeEvent as SubmitEvent).submitter?.getAttribute('name') !== 'saveSettings') {
+      const source = clientSource === 'automatic' ? clients.data?.[oauthProvider].custom ? 'global' : 'preset' : clientSource;
+      const parsed = oauthStartSchema.safeParse({ account, accountId, provider: oauthProvider,
+        client: { source, ...(source === 'custom' ? { clientId: value('oauthClientId'), clientSecret: String(form.get('oauthClientSecret') ?? '') || undefined } : {}) } });
+      if (!parsed.success) { setServersOpen(true); setError(describeIssues(parsed.error.issues, labels)); return; }
+      setError(''); start.mutate(parsed.data); return;
+    }
+    const parsed = (accountId ? accountUpdateSchema : accountSchema).safeParse(account);
+    if (!parsed.success) { setServersOpen(true); setError(describeIssues(parsed.error.issues, labels)); return; }
+    setError(''); save.mutate(parsed.data);
   }
-
-  return <Modal title="连接邮箱" description="通过 IMAP 和 SMTP 连接，邮件会同步到这台设备。" onClose={() => { if (!add.isPending) onClose(); }} wide>
-    <form onSubmit={submit} className="account-form">
-      <div className="form-grid">
-        <label>邮箱地址<input name="email" type="email" required autoFocus placeholder="you@example.com" value={email} onChange={event => setEmail(event.target.value)} /></label>
-        <label>显示名称（选填）<input name="name" placeholder={provider?.name ?? '例如：工作邮箱'} /></label>
-      </div>
-      <label>邮箱服务商<select value={providerId} onChange={event => { setProviderId(event.target.value); setServersOpen(null); setError(''); add.reset(); }}>
-        <option value="auto">自动识别{detectedProvider ? `：${detectedProvider.name}` : ''}</option>
-        {providerPresets.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-        <option value="custom">其他（手动填写服务器）</option>
+  const presetKey = `${providerId}:${preset?.name ?? ''}:${providerId === 'discovered' ? discoveryVersion : 0}`;
+  return <Modal title={accountId ? '邮箱设置' : '连接邮箱'} description={accountId ? '更换收信服务器或登录名会重新同步本地邮件索引，草稿保留。' : '通过 IMAP 和 SMTP 连接，邮件会同步到这台设备。'} onClose={() => { if (!save.isPending && !start.isPending && !authorizing) onClose(); }} wide>
+    {authorization && <OAuthAuthorization session={authorization} onSaved={saved} onBusy={setAuthorizing} onCancel={() => { setAuthorization(null); start.reset(); }} />}
+    <form onSubmit={submit} className="account-form" noValidate style={authorization ? { display: 'none' } : undefined}><fieldset className="form-fields" disabled={save.isPending || start.isPending}>
+      <div className="form-grid"><label>邮箱地址<input name="email" type="email" required autoFocus value={email} onChange={event => setEmail(event.target.value)} placeholder="you@example.com" /></label><label>显示名称（选填）<input name="name" defaultValue={settings?.name} placeholder={preset?.name ?? '例如：工作邮箱'} /></label></div>
+      <label>邮箱服务商<select value={providerId} onChange={event => { setProviderId(event.target.value); setServersOpen(null); setError(''); save.reset(); setAuthMode(settings?.oauth ? 'oauth' : 'auto'); setClientSource('automatic'); }}>
+        <option value="auto">自动识别{detected ? `：${detected.name}` : ''}</option>{providerPresets.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+        {discovered && <option value="discovered">在线配置：{discovered.name}</option>}<option value="custom">其他（手动填写服务器）</option>
       </select></label>
-      {provider && <div className="provider-note" role="status"><strong>{provider.name}</strong><p>{provider.hint} <a href={provider.helpUrl} target="_blank" rel="noreferrer">查看帮助 ↗</a></p></div>}
-      {!provider?.requiresOAuth && <label>{provider?.passwordLabel ?? '密码或授权码'}<input name="password" type="password" autoComplete="new-password" required placeholder={provider ? '' : 'QQ、163 等邮箱要用客户端授权码，不是登录密码'} /></label>}
-
-      <details className="advanced" open={serversOpen ?? !provider}>
-        <summary onClick={event => { event.preventDefault(); setServersOpen(!(serversOpen ?? !provider)); }}>服务器与高级设置{provider && <span>已按 {provider.name} 填好</span>}</summary>
-        <div className="form-grid" key={provider?.id ?? 'custom'}>
-          {(['imap', 'smtp'] as const).map(protocol => <fieldset key={protocol}>
-            <legend>{protocol === 'imap' ? '收信（IMAP）' : '发信（SMTP）'}</legend>
-            <label>服务器<input name={`${protocol}Host`} required placeholder={`${protocol}.example.com`} defaultValue={provider?.[protocol].host ?? ''} /></label>
-            <div className="server-options">
-              <label>端口<input name={`${protocol}Port`} type="number" min={1} max={65535} required defaultValue={provider?.[protocol].port ?? (protocol === 'imap' ? 993 : 465)} /></label>
-              <label>加密<select name={`${protocol}Security`} defaultValue={provider?.[protocol].security ?? 'tls'}><option value="tls">TLS</option><option value="starttls">STARTTLS</option><option value="plain">不加密（仅本机）</option></select></label>
-            </div>
-            <label>登录名（选填）<input name={`${protocol}User`} placeholder="默认用邮箱地址" /></label>
-            {protocol === 'smtp' && <label>发信密码（选填）<input name="smtpPassword" type="password" autoComplete="new-password" placeholder="默认与上面相同" /></label>}
-          </fieldset>)}
-        </div>
-        <label>已发送的邮件<select name="sentCopy" key={provider?.id ?? 'custom'} defaultValue={provider?.sentCopy ?? 'append'}>
-          <option value="append">由本应用存入“已发送”（多数邮箱）</option>
-          <option value="server">服务商会自动保存（Gmail、Outlook）</option>
-        </select></label>
-        <label>代理（选填）<input name="proxy" placeholder="socks5://127.0.0.1:1080 或 http://127.0.0.1:7890" /></label>
+      <div className="discovery-row"><Button type="button" onClick={() => discover.mutate(email)} disabled={!email || discover.isPending}>{discover.isPending ? '正在查询…' : '在线查找服务器'}</Button><span className="hint">只向 Thunderbird 配置库查询邮箱域名。</span></div>
+      {providerHints && <div className="provider-note" role="status"><strong>{providerHints.name}</strong><p>{providerHints.hint} <a href={providerHints.helpUrl} target="_blank" rel="noreferrer">查看帮助 ↗</a></p></div>}
+      {providerId === 'discovered' && discovered && <p className="provider-note">已从 ISPDB 填入配置，请核对下方服务器。{blocked && '此服务商的 OAuth 暂不支持。'}</p>}
+      {oauthProvider === 'google' && !settings?.oauth && <label>登录方式<select value={useOAuth ? 'oauth' : 'password'} onChange={event => setAuthMode(event.target.value)}><option value="oauth">Google OAuth 登录</option><option value="password">应用专用密码</option></select></label>}
+      {useOAuth && oauthProvider ? <OAuthClientFields provider={oauthProvider} source={clientSource} onSource={setClientSource} saved={settings?.oauth?.client} clients={clients.data} />
+        : !blocked && <label>{providerHints?.passwordLabel ?? '密码或授权码'}{accountId && '（留空不改）'}<input name="password" type="password" autoComplete="new-password" required={!accountId} placeholder={accountId ? '填写后同时更新收发信密码，发信可在下方另填' : ''} /></label>}
+      <details className="advanced" open={serversOpen ?? !preset}>
+        <summary onClick={event => { event.preventDefault(); setServersOpen(!(serversOpen ?? !preset)); }}>服务器与高级设置{preset && <span>已按 {preset.name} 填好</span>}</summary>
+        <div className="form-grid" key={presetKey}>{(['imap', 'smtp'] as const).map(protocol => {
+          const server = preset?.[protocol] ?? settings?.[protocol];
+          const user = providerId === 'discovered' ? discovered?.[protocol].user : !preset ? settings?.[protocol].user : '';
+          return <fieldset key={protocol}><legend>{protocol === 'imap' ? '收信（IMAP）' : '发信（SMTP）'}</legend>
+            <label>服务器<input name={`${protocol}Host`} required defaultValue={server?.host ?? ''} placeholder={`${protocol}.example.com`} /></label>
+            <div className="server-options"><label>端口<input name={`${protocol}Port`} type="number" min={1} max={65535} required defaultValue={server?.port ?? (protocol === 'imap' ? 993 : 465)} /></label><label>加密<select name={`${protocol}Security`} defaultValue={server?.security ?? 'tls'}><option value="tls">TLS</option><option value="starttls">STARTTLS</option><option value="plain">不加密（仅本机）</option></select></label></div>
+            <label>登录名（选填）<input name={`${protocol}User`} defaultValue={user} placeholder="默认用邮箱地址" /></label>
+            {protocol === 'smtp' && !useOAuth && <label>独立发信密码（选填）<input name="smtpPassword" type="password" autoComplete="new-password" placeholder={accountId ? '留空保留，或使用上面新填写的密码' : '默认与上面相同'} /></label>}
+          </fieldset>;
+        })}</div>
+        <label>已发送的邮件<select name="sentCopy" key={presetKey} defaultValue={preset?.sentCopy ?? settings?.sentCopy ?? 'append'}><option value="append">由本应用存入“已发送”（多数邮箱）</option><option value="server">服务商会自动保存（Gmail、Outlook）</option></select></label>
+        <label>代理（选填）<input name="proxy" disabled={clearProxy} placeholder={settings?.proxyDisplay ? `留空保留现有代理 ${settings.proxyDisplay}` : 'socks5://127.0.0.1:1080 或 http://127.0.0.1:7890'} /></label>
+        {settings?.proxyDisplay && <label className="checkbox-label"><input type="checkbox" checked={clearProxy} onChange={event => setClearProxy(event.target.checked)} />移除现有代理</label>}
       </details>
-
-      {(error || add.error) && <p className="error" role="alert">{error || add.error?.message}</p>}
-      <div className="form-footer">
-        <span className="hint">会先验证能否收信和发信，通过后才保存。密码加密存在本机。</span>
-        <Button type="submit" variant="primary" disabled={add.isPending || provider?.requiresOAuth}>{provider?.requiresOAuth ? '暂不支持' : add.isPending ? '正在验证…' : '连接'}</Button>
-      </div>
+    </fieldset>
+    {(error || save.error || discover.error || start.error || clients.error) && <p className="error" role="alert">{error || save.error?.message || discover.error?.message || start.error?.message || clients.error?.message}</p>}
+    <div className="form-footer"><span className="hint">验证收发信后保存，凭据加密存储。</span>
+      {settings?.oauth && <Button type="submit" name="saveSettings" disabled={save.isPending || start.isPending}>保存设置</Button>}
+      <Button type="submit" variant="primary" disabled={save.isPending || start.isPending || blocked || (useOAuth && !clients.data)}>{blocked ? '暂不支持' : save.isPending || start.isPending ? '正在处理…' : useOAuth ? settings?.oauth ? '重新授权' : '开始 OAuth 授权' : accountId ? '保存设置' : '连接'}</Button></div>
     </form>
   </Modal>;
 }

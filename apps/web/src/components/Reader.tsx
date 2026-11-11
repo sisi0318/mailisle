@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Archive, Download, ImageOff, Mail, MailOpen, Reply, Star, Trash2 } from 'lucide-react';
-import type { Folder, FolderRole, Message, MessageBody } from '@mail/shared';
+import { ArrowLeft, Archive, Download, Forward, ImageOff, Mail, MailOpen, Reply, ReplyAll, Star, Trash2 } from 'lucide-react';
+import type { ComposeMode, Folder, FolderRole, Message, MessageBody } from '@mail/shared';
 import { api, json } from '../api';
 import { fileSize, folderList, fullDate, listDate, senderName } from '../format';
 import { mailDocument } from '../mail-html';
@@ -10,7 +10,8 @@ import { Button } from './ui';
 type Props = {
   message: Message;
   folders: Folder[];
-  onReply: () => void;
+  onReply: (mode: ComposeMode, includeAttachments?: boolean) => void;
+  composing: boolean;
   onBack: () => void;
   onSelect: (message: Message) => void;
   onFlag: (patch: { seen?: boolean; starred?: boolean }) => void;
@@ -18,24 +19,28 @@ type Props = {
   onMoved: () => void;
 };
 
-export function Reader({ message, folders, onReply, onBack, onSelect, onFlag, onMoved }: Props) {
+export function Reader({ message, folders, onReply, composing, onBack, onSelect, onFlag, onMoved }: Props) {
   const query = useQueryClient();
   const body = useQuery({ queryKey: ['body', message.id], queryFn: () => api<MessageBody>(`/messages/${message.id}/body`), retry: false });
   const thread = useQuery({ queryKey: ['thread', message.id], queryFn: () => api<Message[]>(`/messages/${message.id}/thread`) });
   const move = useMutation({ mutationFn: (folderId: string) => api(`/messages/${message.id}/move`, json('POST', { folderId })),
     onSuccess: () => { onMoved(); void query.invalidateQueries({ queryKey: ['messages'] }); } });
-  const rendered = useMemo(() => body.data?.html ? mailDocument(body.data.html) : null, [body.data?.html]);
+  const rendered = useMemo(() => body.data?.html ? mailDocument(body.data.html, body.data.inlineImages) : null, [body.data?.html, body.data?.inlineImages]);
   const targets = folderList(folders.filter(folder => folder.accountId === message.accountId));
   const byRole = (role: FolderRole) => targets.find(({ folder }) => folder.role === role)?.folder;
   const archive = byRole('archive');
   const trash = byRole('trash');
   const recipients = message.to.map(to => to.name || to.address).join('、');
-  const attachments = body.data?.attachments ?? [];
+  const embedded = new Set(rendered?.embeddedAttachmentIds ?? []);
+  const attachments = (body.data?.attachments ?? []).filter(attachment => !embedded.has(attachment.id));
 
   return <section className="reader">
     <div className="reader-toolbar">
       <Button variant="ghost" className="reader-back" onClick={onBack} aria-label="返回列表"><ArrowLeft size={18} /></Button>
-      <Button variant="ghost" onClick={onReply}><Reply size={17} />回复</Button>
+      <Button variant="ghost" disabled={composing} onClick={() => onReply('reply')}><Reply size={17} />回复</Button>
+      <Button variant="ghost" disabled={composing} aria-label="全部回复" title="全部回复" onClick={() => onReply('reply-all')}><ReplyAll size={17} /></Button>
+      <Button variant="ghost" disabled={composing} aria-label="转发" title="转发并携带附件（含内嵌图片文件）" onClick={() => onReply('forward')}><Forward size={17} /></Button>
+      <Button variant="ghost" disabled={composing} className="forward-text" onClick={() => onReply('forward', false)}>仅转发正文</Button>
       <span className="toolbar-separator" />
       <Button variant="ghost" aria-label={message.seen ? '标为未读' : '标为已读'} title={message.seen ? '标为未读' : '标为已读'} onClick={() => onFlag({ seen: !message.seen })}>{message.seen ? <Mail size={17} /> : <MailOpen size={17} />}</Button>
       <Button variant="ghost" aria-label={message.starred ? '取消星标' : '加星标'} title={message.starred ? '取消星标' : '加星标'} aria-pressed={message.starred} className={message.starred ? 'starred' : ''} onClick={() => onFlag({ starred: !message.starred })}><Star size={17} fill={message.starred ? 'currentColor' : 'none'} /></Button>

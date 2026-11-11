@@ -1,15 +1,18 @@
 import { randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { Hono } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { streamSSE } from 'hono/streaming';
 import { bodyLimit } from 'hono/body-limit';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { accountSchema, flagsSchema, listSchema, loginSchema, moveSchema, sendSchema, type SyncEvent } from '@mail/shared';
-import { publicError, verifyPassword, type MailService } from '@mail/core';
+import { accountSchema, accountUpdateSchema, composeSchema, discoverySchema, draftSchema, flagsSchema, listSchema, loginSchema, MAX_ATTACHMENT_BYTES, moveSchema, sendSchema, type SyncEvent } from '@mail/shared';
+import { discoverAccount, publicError, verifyPassword, type MailService } from '@mail/core';
+import { oauthStartSchema, oauthProviderSchema, oauthClientUpdateSchema, oauthCallbackSchema } from '@mail/shared';
 
-type Options = { service: MailService; passwordHash: string; port: number; webRoot?: string; dev?: boolean };
+type Options = { service: MailService; passwordHash: string; port: number; webRoot?: string; docsRoot?: string; dev?: boolean };
 
-export function createApp({ service, passwordHash, port, webRoot, dev = false }: Options) {
+export function createApp({ service, passwordHash, port, webRoot, docsRoot = resolve('docs'), dev = false }: Options) {
   const app = new Hono();
   const sessions = new Map<string, number>();
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
@@ -31,7 +34,7 @@ export function createApp({ service, passwordHash, port, webRoot, dev = false }:
     c.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
     await next();
   });
-  app.use('/api/*', bodyLimit({ maxSize: 12_000_000, onError: c => c.json({ error: '请求内容过大' }, 413) }));
+  app.use('/api/*', bodyLimit({ maxSize: MAX_ATTACHMENT_BYTES + 2 * 1024 * 1024, onError: c => c.json({ error: '请求内容过大' }, 413) }));
   app.use('/api/*', async (c, next) => {
     c.header('Cache-Control', 'no-store');
     if (['/api/session', '/api/login'].includes(c.req.path)) return next();
@@ -53,11 +56,106 @@ export function createApp({ service, passwordHash, port, webRoot, dev = false }:
     return c.json({ authenticated: true });
   });
   app.post('/api/logout', c => {
+    service.oauthFlow.cancelOwner(getCookie(c, 'mail_session') ?? '');
     sessions.delete(getCookie(c, 'mail_session') ?? '');
     deleteCookie(c, 'mail_session', { path: '/' });
     return c.json({ ok: true });
   });
   app.get('/api/accounts', c => c.json(service.store.accounts()));
+  app.get('/api/oauth/clients', c => c.json(service.oauth.settings()));
+  app.put('/api/oauth/clients/:provider', async c => {
+    const provider = oauthProviderSchema.safeParse(c.req.param('provider'));
+    const input = oauthClientUpdateSchema.safeParse(await c.req.json());
+    if (!provider.success || !input.success) return c.json({ error: 'OAuth 客户端设置不正确' }, 400);
+    service.oauth.setClient(provider.data, input.data);
+    return c.json(service.oauth.settings());
+  });
+  app.get('/api/oauth/docs/:provider', async c => {
+    const provider = oauthProviderSchema.safeParse(c.req.param('provider'));
+    if (!provider.success) return c.notFound();
+    return c.text(await readFile(join(docsRoot, `oauth-${provider.data}.md`), 'utf8'));
+  });
+  app.post('/api/oauth/start', async c => {
+    const parsed = oauthStartSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: parsed.error.issues[0].message }, 400);
+    return c.json(await service.oauthFlow.start(getCookie(c, 'mail_session')!, parsed.data), 201);
+  });
+  app.get('/api/oauth/sessions/:id', c => c.json(service.oauthFlow.status(c.req.param('id'), getCookie(c, 'mail_session')!)));
+  app.post('/api/oauth/sessions/:id/callback', async c => {
+    const parsed = oauthCallbackSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: '请粘贴完整回调网址' }, 400);
+    return c.json(await service.oauthFlow.paste(c.req.param('id'), getCookie(c, 'mail_session')!, parsed.data.url));
+  });
+  app.post('/api/oauth/sessions/:id/complete', async c => c.json(await service.oauthFlow.finish(c.req.param('id'), getCookie(c, 'mail_session')!,
+    (config, id) => service.saveOAuthAccount(config, id))));
+  app.delete('/api/oauth/sessions/:id', c => {
+    service.oauthFlow.cancel(c.req.param('id'), getCookie(c, 'mail_session')!);
+    return c.json({ ok: true });
+  });
+  app.get('/api/accounts/:id', c => {
+    if (!service.store.account(c.req.param('id'))) return c.json({ error: '邮箱不存在' }, 404);
+    return c.json(service.accountSettings(c.req.param('id')));
+  });
+  app.put('/api/accounts/:id', async c => {
+    if (!service.store.account(c.req.param('id'))) return c.json({ error: '邮箱不存在' }, 404);
+    const parsed = accountUpdateSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: parsed.error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('；') }, 400);
+    const oauth = service.accountSettings(c.req.param('id')).oauth;
+    if (oauth) {
+      const oauthInput = oauthStartSchema.safeParse({ accountId: c.req.param('id'), account: parsed.data, provider: oauth.provider, client: { source: 'saved' } });
+      if (!oauthInput.success) return c.json({ error: oauthInput.error.issues[0].message }, 400);
+    }
+    await service.updateAccount(c.req.param('id'), parsed.data);
+    return c.json({ ok: true });
+  });
+  app.post('/api/autoconfig', async c => {
+    const parsed = discoverySchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: '请输入有效邮箱地址' }, 400);
+    return c.json({ config: await discoverAccount(parsed.data.email) });
+  });
+  app.get('/api/counts', c => c.json(service.store.unreadCounts()));
+  app.post('/api/uploads', async c => {
+    if (!c.req.header('content-type')?.startsWith('multipart/form-data')) return c.json({ error: '请使用附件上传表单' }, 415);
+    const form = await c.req.formData();
+    const file = form.get('file');
+    if (!(file instanceof File)) return c.json({ error: '请选择一个附件' }, 400);
+    if (!service.uploads) return c.json({ error: '附件存储未配置' }, 503);
+    if (file.size > MAX_ATTACHMENT_BYTES) return c.json({ error: '附件不能超过 20 MiB' }, 413);
+    return c.json(await service.uploads.save(file.name, file.type, Buffer.from(await file.arrayBuffer())), 201);
+  });
+  app.delete('/api/uploads/:id', async c => {
+    await service.uploads?.removeUnused([c.req.param('id')]);
+    return c.json({ ok: true });
+  });
+  app.get('/api/uploads/:id', async c => {
+    if (!service.store.upload(c.req.param('id'))) return c.json({ error: '附件不存在' }, 404);
+    if (!service.uploads) return c.json({ error: '附件存储未配置' }, 503);
+    const [file] = await service.uploads.attachments([c.req.param('id')]);
+    c.header('Content-Type', 'application/octet-stream');
+    c.header('Content-Disposition', `attachment; filename="attachment"; filename*=UTF-8''${encodeURIComponent(file.filename).replace(/'/g, '%27')}`);
+    return c.body(new Uint8Array(file.content));
+  });
+  app.get('/api/drafts', c => c.json(service.store.drafts(c.req.query('accountId'))));
+  app.get('/api/drafts/:id', c => {
+    if (!service.store.draft(c.req.param('id'))) return c.json({ error: '草稿不存在' }, 404);
+    return c.json(service.getDraft(c.req.param('id')));
+  });
+  app.post('/api/drafts', async c => {
+    const parsed = draftSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: '草稿内容不正确，请检查长度和附件' }, 400);
+    return c.json(await service.saveDraft(undefined, parsed.data), 201);
+  });
+  app.put('/api/drafts/:id', async c => {
+    if (!service.store.draft(c.req.param('id'))) return c.json({ error: '草稿不存在' }, 404);
+    const parsed = draftSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: '草稿内容不正确，请检查长度和附件' }, 400);
+    return c.json(await service.saveDraft(c.req.param('id'), parsed.data));
+  });
+  app.delete('/api/drafts/:id', async c => {
+    if (!service.store.draft(c.req.param('id'))) return c.json({ error: '草稿不存在' }, 404);
+    await service.deleteDraft(c.req.param('id'));
+    return c.json({ ok: true });
+  });
   app.post('/api/accounts', async c => {
     const parsed = accountSchema.safeParse(await c.req.json());
     if (!parsed.success) return c.json({ error: parsed.error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('；') }, 400);
@@ -85,6 +183,11 @@ export function createApp({ service, passwordHash, port, webRoot, dev = false }:
   });
   app.get('/api/messages/:id/body', async c => c.json(await service.body(c.req.param('id'))));
   app.get('/api/messages/:id/thread', c => c.json(service.store.thread(service.store.message(c.req.param('id'))!.threadId)));
+  app.post('/api/messages/:id/draft', async c => {
+    const parsed = composeSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: '写信操作不正确' }, 400);
+    return c.json(await service.compose(c.req.param('id'), parsed.data.mode, parsed.data.includeAttachments, parsed.data.timeZone), 201);
+  });
   app.patch('/api/messages/:id/flags', async c => {
     const parsed = flagsSchema.safeParse(await c.req.json());
     if (!parsed.success) return c.json({ error: '标记参数不正确' }, 400);

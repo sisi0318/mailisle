@@ -88,7 +88,7 @@ describe('real GreenMail IMAP / SMTP round trip', () => {
   it('sends SMTP, appends exactly one sent copy, and delivers to a second mailbox', async () => {
     const subject = `${unique} outbound`;
     const result = await service.send({ accountId, to: ['bob@example.com'], cc: [], bcc: [], subject,
-      text: '真实 SMTP 收发测试', html: '<p>真实 SMTP 收发测试</p>', references: [] });
+      text: '真实 SMTP 收发测试', html: '<p>真实 SMTP 收发测试</p>', references: [], attachmentIds: [] });
     expect(result.warning).toBeUndefined();
     await service.sync(accountId);
     const sent = store.folders(accountId).find(folder => folder.role === 'sent')!;
@@ -123,7 +123,7 @@ describe('real GreenMail IMAP / SMTP round trip', () => {
     const subject = `${unique} server-copy`;
     try {
       await adapter.connect();
-      await adapter.send({ accountId, to: ['bob@example.com'], cc: [], bcc: [], subject, text: '服务端副本模式测试', references: [] }, 'Sent');
+      await adapter.send({ accountId, to: ['bob@example.com'], cc: [], bcc: [], subject, text: '服务端副本模式测试', references: [], attachmentIds: [] }, 'Sent');
       const lock = await direct.getMailboxLock('Sent');
       try { expect(await direct.search({ header: { subject } }, { uid: true })).toEqual([]); }
       finally { lock.release(); }

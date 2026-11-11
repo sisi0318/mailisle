@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
-import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Inbox, Mail, Plus, RefreshCw, Search, X } from 'lucide-react';
-import type { Account, Folder, Message, MessagePage, SyncEvent } from '@mail/shared';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { FileText, Inbox, Mail, Menu, Plus, RefreshCw, Search, X } from 'lucide-react';
+import type { Account, ComposeMode, Draft, DraftSummary, Folder, Message, MessagePage, SyncEvent, UnreadCounts } from '@mail/shared';
 import { api, json } from './api';
 import { accountColor, folderList } from './format';
 import { Button } from './components/ui';
@@ -9,10 +9,13 @@ import { Login } from './components/Login';
 import { MessageList } from './components/MessageList';
 import { Reader, ReaderEmpty } from './components/Reader';
 import { Sidebar, type Filter } from './components/Sidebar';
+import { DraftList } from './components/DraftList';
+import * as Dialog from '@radix-ui/react-dialog';
 
 type FlagPatch = { seen?: boolean; starred?: boolean };
 const Composer = lazy(() => import('./components/Composer').then(module => ({ default: module.Composer })));
 const AccountForm = lazy(() => import('./components/AccountForm').then(module => ({ default: module.AccountForm })));
+const OAuthSettings = lazy(() => import('./components/OAuth').then(module => ({ default: module.OAuthSettings })));
 
 export default function App() {
   const query = useQueryClient();
@@ -32,12 +35,15 @@ function Mailbox() {
   const query = useQueryClient();
   const accounts = useQuery({ queryKey: ['accounts'], queryFn: () => api<Account[]>('/accounts') });
   const folders = useQuery({ queryKey: ['folders'], queryFn: () => api<Folder[]>('/folders') });
+  const counts = useQuery({ queryKey: ['counts'], queryFn: () => api<UnreadCounts>('/counts') });
   const [filter, setFilter] = useState<Filter>({ view: 'inbox' });
   const [search, setSearch] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [selected, setSelected] = useState<Message | null>(null);
-  const [adding, setAdding] = useState(false);
-  const [composer, setComposer] = useState<{ reply?: Message } | null>(null);
+  const [accountForm, setAccountForm] = useState<{ id?: string } | null>(null);
+  const [composer, setComposer] = useState<{ draft?: Draft; accountId?: string } | null>(null);
+  const [mobileNav, setMobileNav] = useState(false);
+  const [oauthSettings, setOAuthSettings] = useState(false);
   const [notice, setNotice] = useState('');
   const [syncing, setSyncing] = useState<Set<string>>(new Set());
   const [connected, setConnected] = useState(false);
@@ -47,9 +53,13 @@ function Mailbox() {
 
   const messages = useInfiniteQuery({
     queryKey: ['messages', filter, searchTerm], initialPageParam: 0,
-    queryFn: ({ pageParam }) => api<MessagePage>(`/messages?${new URLSearchParams({ ...filter, q: searchTerm, offset: String(pageParam) })}`),
+    queryFn: ({ pageParam }) => api<MessagePage>(`/messages?${new URLSearchParams({ ...filter, view: filter.view === 'drafts' ? 'all' : filter.view, q: searchTerm, offset: String(pageParam) })}`),
     getNextPageParam: page => page.nextOffset ?? undefined,
+    enabled: filter.view !== 'drafts',
   });
+  const drafts = useQuery({ queryKey: ['drafts', filter.accountId], queryFn: () => api<DraftSummary[]>(`/drafts${filter.accountId ? `?accountId=${filter.accountId}` : ''}`), enabled: filter.view === 'drafts' });
+  const prepare = useMutation({ mutationFn: ({ messageId, mode, includeAttachments }: { messageId: string; mode: ComposeMode; includeAttachments: boolean }) => api<Draft>(`/messages/${messageId}/draft`, json('POST', { mode, includeAttachments, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone })),
+    onSuccess: draft => { setComposer({ draft }); void query.invalidateQueries({ queryKey: ['drafts'] }); void query.invalidateQueries({ queryKey: ['counts'] }); }, onError: error => setNotice(error.message) });
   const withPending = useCallback((message: Message) => pendingFlags[message.id] ? { ...message, ...pendingFlags[message.id] } : message, [pendingFlags]);
   const rows = useMemo(() => (messages.data?.pages.flatMap(page => page.messages) ?? []).map(withPending), [messages.data, withPending]);
   const selectedMessage = selected && (rows.find(message => message.id === selected.id) ?? withPending(selected));
@@ -64,20 +74,22 @@ function Mailbox() {
   useEffect(() => {
     const events = new EventSource('/api/events');
     let timer: ReturnType<typeof setTimeout> | undefined;
-    // One sync reports every folder separately; wait for a pause so the lists are refetched once.
-    const refresh = () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => { for (const key of ['accounts', 'folders', 'messages', 'thread']) void query.invalidateQueries({ queryKey: [key] }); }, 400);
+    const pending = new Set<string>();
+    const refresh = (keys = ['accounts', 'folders', 'messages', 'thread', 'counts', 'drafts']) => {
+      keys.forEach(key => pending.add(key));
+      if (timer) return;
+      timer = setTimeout(() => { timer = undefined; for (const key of pending) void query.invalidateQueries({ queryKey: [key] }); pending.clear(); }, 400);
     };
     events.addEventListener('ready', () => { setConnected(true); setSyncing(new Set()); refresh(); });
     events.addEventListener('update', event => {
       const update = JSON.parse((event as MessageEvent<string>).data) as SyncEvent;
+      if (update.messageId) void query.invalidateQueries({ queryKey: ['body', update.messageId] });
       if (update.state) setSyncing(current => {
         const next = new Set(current);
         if (update.state === 'running') next.add(update.accountId); else next.delete(update.accountId);
         return next;
       });
-      refresh();
+      refresh(update.type === 'draft' ? ['drafts', 'counts'] : update.contentOnly ? ['messages', 'thread'] : update.type === 'sync' ? ['accounts'] : undefined);
     });
     events.onerror = () => { setConnected(false); void query.invalidateQueries({ queryKey: ['session'] }); };
     return () => { clearTimeout(timer); events.close(); };
@@ -87,7 +99,7 @@ function Mailbox() {
     setPendingFlags(current => ({ ...current, [message.id]: { ...current[message.id], ...patch } }));
     try { await api(`/messages/${message.id}/flags`, json('PATCH', patch)); }
     catch (error) { setNotice((error as Error).message); }
-    await Promise.all([query.invalidateQueries({ queryKey: ['messages'] }), query.invalidateQueries({ queryKey: ['thread'] })]);
+    await Promise.all([query.invalidateQueries({ queryKey: ['messages'] }), query.invalidateQueries({ queryKey: ['thread'] }), query.invalidateQueries({ queryKey: ['counts'] })]);
     setPendingFlags(current => {
       const rest = { ...current[message.id] };
       // A newer change to the same flag is still on its way; leave that one in place.
@@ -97,19 +109,33 @@ function Mailbox() {
     });
   }, [query]);
 
-  function navigate(next: Filter) { setFilter(next); setSelected(null); }
+  function navigate(next: Filter) { setFilter(next); setSelected(null); setMobileNav(false); }
   function select(message: Message) {
     setSelected(message);
     if (!message.seen) void flag(message, { seen: true });
   }
   async function removeAccount(account: Account) {
-    if (!window.confirm(`移除“${account.name}”及它在本机的邮件索引？服务器上的邮件不受影响。`)) return;
+    if (!window.confirm(`移除“${account.name}”及它在本机的邮件索引和草稿？服务器上的邮件不受影响。`)) return;
     try { await api(`/accounts/${account.id}`, { method: 'DELETE' }); navigate({ view: 'inbox' }); await query.invalidateQueries(); }
     catch (error) { setNotice((error as Error).message); }
   }
   function syncAll() {
     for (const account of accountList) void api(`/accounts/${account.id}/sync`, { method: 'POST' }).catch((error: Error) => setNotice(error.message));
   }
+  async function openDraft(id: string) {
+    try { setComposer({ draft: await api<Draft>(`/drafts/${id}`) }); }
+    catch (error) { setNotice((error as Error).message); }
+  }
+  async function deleteDraft(id: string) {
+    if (!window.confirm('删除这封本地草稿和不再使用的附件？')) return;
+    try { await api(`/drafts/${id}`, { method: 'DELETE' }); await query.invalidateQueries({ queryKey: ['drafts'] }); await query.invalidateQueries({ queryKey: ['counts'] }); }
+    catch (error) { setNotice((error as Error).message); }
+  }
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 600px)');
+    const resize = () => { if (!media.matches) setMobileNav(false); };
+    media.addEventListener('change', resize); return () => media.removeEventListener('change', resize);
+  }, []);
   async function logout() {
     await api('/logout', { method: 'POST' }).catch(() => undefined);
     query.clear();
@@ -118,29 +144,41 @@ function Mailbox() {
 
   const account = accountList.find(item => item.id === filter.accountId);
   const folder = folderRows.find(item => item.folder.id === filter.folderId);
-  const title = searchTerm ? '搜索结果' : folder ? folder.label : account ? '收件箱' : filter.view === 'starred' ? '星标邮件' : filter.view === 'all' ? '所有邮件' : '统一收件箱';
-  const total = messages.data?.pages[0]?.total;
-  const scope = [searchTerm && `“${searchTerm}”`, account ? account.name : accountList.length > 1 && '全部邮箱', total !== undefined && `${total} 封`].filter(Boolean).join(' · ');
+  const isDrafts = filter.view === 'drafts';
+  const title = isDrafts ? '本地草稿' : searchTerm ? '搜索结果' : folder ? folder.label : account ? '收件箱' : filter.view === 'starred' ? '星标邮件' : filter.view === 'all' ? '所有邮件' : '统一收件箱';
+  const total = isDrafts ? drafts.data?.length : messages.data?.pages[0]?.total;
+  const scope = [!isDrafts && searchTerm && `“${searchTerm}”`, account ? account.name : accountList.length > 1 && '全部邮箱', total !== undefined && `${total} 封`].filter(Boolean).join(' · ');
   const accountMark = !account && accountList.length > 1 ? (accountId: string) => {
     const index = accountList.findIndex(item => item.id === accountId);
     return index < 0 ? undefined : { name: accountList[index].name, color: accountColor(index) };
   } : undefined;
-  const empty = searchTerm ? <><Search size={30} strokeWidth={1.3} /><h3>没有找到相关邮件</h3><p>换个关键词试试。正文要在读过之后才能搜到。</p></>
+  const empty = searchTerm ? <><Search size={30} strokeWidth={1.3} /><h3>没有找到相关邮件</h3><p>换个关键词试试。后台会逐步补全正文索引。</p></>
     : accountList.length ? <><Inbox size={30} strokeWidth={1.3} /><h3>这里没有邮件</h3><p>同步完成后，来信会出现在这里。</p></>
-    : <><Inbox size={30} strokeWidth={1.3} /><h3>先连接一个邮箱</h3><p>连接后，邮件会同步到这台设备。</p><Button variant="primary" onClick={() => setAdding(true)}><Plus size={15} />连接邮箱</Button></>;
+    : <><Inbox size={30} strokeWidth={1.3} /><h3>先连接一个邮箱</h3><p>连接后，邮件会同步到这台设备。</p><Button variant="primary" onClick={() => setAccountForm({})}><Plus size={15} />连接邮箱</Button></>;
+  const sidebarProps = { accounts: accountList, folders: folders.data ?? [], filter, syncing, connected, counts: counts.data,
+    onNavigate: navigate, onClose: () => setMobileNav(false),
+    onEditAccount: (item: Account) => { setMobileNav(false); setAccountForm({ id: item.id }); },
+    onCompose: () => { setMobileNav(false); setComposer({ accountId: filter.accountId }); },
+    onAddAccount: () => { setMobileNav(false); setAccountForm({}); },
+    onOAuthSettings: () => { setMobileNav(false); setOAuthSettings(true); },
+    onRemoveAccount: (item: Account) => { void removeAccount(item); }, onLogout: () => { void logout(); } };
 
   return <div className="mail-app">
-    <Sidebar accounts={accountList} folders={folders.data ?? []} filter={filter} syncing={syncing} connected={connected} onNavigate={navigate}
-      onCompose={() => setComposer({})} onAddAccount={() => setAdding(true)} onRemoveAccount={item => { void removeAccount(item); }} onLogout={() => { void logout(); }} />
+    <Sidebar {...sidebarProps} mobileOpen={false} />
+    <Dialog.Root open={mobileNav} onOpenChange={setMobileNav}><Dialog.Portal>
+      <Dialog.Overlay className="sidebar-backdrop" />
+      <Dialog.Content className="mobile-sidebar-dialog" aria-describedby={undefined}><Dialog.Title className="sr-only">邮箱导航</Dialog.Title><Sidebar {...sidebarProps} mobileOpen /></Dialog.Content>
+    </Dialog.Portal></Dialog.Root>
     <main className="workspace">
       <header className="workspace-header">
+        <Button className="mobile-menu" variant="ghost" aria-label="打开邮箱导航" aria-expanded={mobileNav} aria-controls="mobile-mail-sidebar" onClick={() => setMobileNav(true)}><Menu size={20} /></Button>
         <div className="header-title"><h1>{title}</h1>{scope && <span>{scope}</span>}</div>
         <div className="header-actions">
-          <div className="search-box">
+          {!isDrafts && <div className="search-box">
             <Search size={16} />
             <input aria-label="搜索邮件" placeholder={account ? `在“${account.name}”中搜索` : '搜索全部邮箱'} value={search} onChange={event => setSearch(event.target.value)} />
             {search && <button aria-label="清空搜索" onClick={() => setSearch('')}><X size={15} /></button>}
-          </div>
+          </div>}
           <Button variant="ghost" aria-label="同步全部邮箱" title="同步全部邮箱" disabled={!accountList.length || syncing.size > 0} onClick={syncAll}><RefreshCw size={17} className={syncing.size ? 'spin' : ''} /></Button>
         </div>
       </header>
@@ -148,15 +186,18 @@ function Mailbox() {
       {(accounts.error || folders.error) && <p className="error">{accounts.error?.message || folders.error?.message}</p>}
       <div className="mail-panes">
         <section className="message-pane">
-          <MessageList key={JSON.stringify([filter, searchTerm])} messages={messages} rows={rows} selectedId={selected?.id} onSelect={select} accountMark={accountMark} empty={empty} />
+          {isDrafts ? drafts.isPending ? <p className="loading">正在读取草稿…</p> : drafts.error ? <p className="error">{drafts.error.message}</p>
+            : <DraftList drafts={drafts.data ?? []} accounts={accountList} onOpen={id => { void openDraft(id); }} onDelete={id => { void deleteDraft(id); }} />
+            : <MessageList key={JSON.stringify([filter, searchTerm])} messages={messages} rows={rows} selectedId={selected?.id} onSelect={select} accountMark={accountMark} empty={empty} />}
         </section>
-        {selectedMessage
-          ? <Reader key={selectedMessage.id} message={selectedMessage} folders={folders.data ?? []} onReply={() => setComposer({ reply: selectedMessage })}
+        {isDrafts ? <section className="reader-empty"><FileText size={40} strokeWidth={1.1} /><p>选择一封草稿继续编辑</p><small>草稿保存在本机服务，不会同步到邮箱服务商。</small></section> : selectedMessage
+          ? <Reader key={selectedMessage.id} message={selectedMessage} folders={folders.data ?? []} composing={prepare.isPending} onReply={(mode, includeAttachments = true) => prepare.mutate({ messageId: selectedMessage.id, mode, includeAttachments })}
               onBack={() => setSelected(null)} onSelect={select} onFlag={patch => { void flag(selectedMessage, patch); }} onMoved={() => setSelected(null)} />
           : <ReaderEmpty />}
       </div>
     </main>
-    {adding && <Suspense fallback={null}><AccountForm onClose={() => setAdding(false)} /></Suspense>}
-    {composer && <Suspense fallback={null}><Composer accounts={accountList} reply={composer.reply} onClose={() => setComposer(null)} onSent={setNotice} /></Suspense>}
+    {accountForm && <Suspense fallback={null}><AccountForm accountId={accountForm.id} onClose={() => setAccountForm(null)} onSaved={id => navigate({ view: 'inbox', accountId: id })} /></Suspense>}
+    {oauthSettings && <Suspense fallback={null}><OAuthSettings onClose={() => setOAuthSettings(false)} /></Suspense>}
+    {composer && <Suspense fallback={null}><Composer key={composer.draft?.id ?? 'new'} accounts={accountList} draft={composer.draft} accountId={composer.accountId} onClose={() => setComposer(null)} onSent={setNotice} /></Suspense>}
   </div>;
 }

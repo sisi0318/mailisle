@@ -1,5 +1,7 @@
 {
-  "name": "mail",
+  "name": "mailisle",
+  "description": "信屿 · MailIsle，本地存储的多邮箱客户端",
+  "repository": { "type": "git", "url": "https://github.com/sisi0318/mailisle.git" },
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.14.0",

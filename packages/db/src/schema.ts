@@ -1,4 +1,5 @@
 import { integer, sqliteTable, text, primaryKey, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
 import type { Address, FolderRole } from '@mail/shared';
 
 export const settings = sqliteTable('settings', { key: text('key').primaryKey(), value: text('value').notNull() });
@@ -19,9 +20,11 @@ export const messages = sqliteTable('messages', {
   replyTo: text('reply_to_json', { mode: 'json' }).$type<Address[]>().notNull().default([]),
   date: integer('date').notNull(), preview: text('preview').notNull().default(''),
   bodyText: text('body_text').notNull().default(''), cached: integer('cached', { mode: 'boolean' }).notNull().default(false),
+  bodyIndexed: integer('body_indexed', { mode: 'boolean' }).notNull().default(false),
 }, table => [
   uniqueIndex('messages_remote_key').on(table.accountId, table.remoteKey), index('messages_date').on(table.date),
   index('messages_message_id').on(table.messageId), index('messages_thread').on(table.threadId),
+  index('messages_pending_body').on(table.accountId, table.bodyIndexed, sql`${table.date} DESC`, sql`${table.id} DESC`),
 ]);
 export const locations = sqliteTable('locations', {
   folderId: text('folder_id').notNull().references(() => folders.id, { onDelete: 'cascade' }),
@@ -38,3 +41,15 @@ export const messageSearchRows = sqliteTable('message_search_rows', {
   id: integer('id').primaryKey(),
   messageId: text('message_id').notNull().unique().references(() => messages.id, { onDelete: 'cascade' }),
 });
+
+export const uploads = sqliteTable('uploads', {
+  id: text('id').primaryKey(), filename: text('filename').notNull(), mimeType: text('mime_type').notNull(),
+  size: integer('size').notNull(), createdAt: integer('created_at').notNull(),
+});
+export const drafts = sqliteTable('drafts', {
+  id: text('id').primaryKey(), accountId: text('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  to: text('to_text').notNull().default(''), cc: text('cc_text').notNull().default(''), bcc: text('bcc_text').notNull().default(''),
+  subject: text('subject').notNull().default(''), text: text('text').notNull().default(''), html: text('html'),
+  inReplyTo: text('in_reply_to'), references: text('refs', { mode: 'json' }).$type<string[]>().notNull().default([]),
+  attachmentIds: text('attachment_ids', { mode: 'json' }).$type<string[]>().notNull().default([]), updatedAt: integer('updated_at').notNull(),
+}, table => [index('drafts_updated').on(table.updatedAt), index('drafts_account').on(table.accountId)]);

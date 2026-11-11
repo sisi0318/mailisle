@@ -15,15 +15,16 @@ it('migrates existing mail and cached search text without changing message ident
   const filename = join(directory, 'mail.sqlite');
   const old = new MailStore(filename, legacyMigrations);
   const { accountId, inbox } = seedAccount(old);
-  old.db.insert(schema.messages).values({ id: 'legacy-mail', accountId, remoteKey: `${inbox.id}:1:1`, messageId: '<legacy>',
-    threadId: 'legacy-thread', references: ['<missing-parent>'], subject: '合同', from: [], to: [], date: 1,
-    bodyText: '缓存正文', preview: '缓存正文', cached: true }).run();
+  old.sqlite.prepare(`INSERT INTO messages(id,account_id,remote_key,message_id,thread_id,refs,subject,from_json,to_json,date,body_text,preview,cached)
+    VALUES ('legacy-mail',?,?,'<legacy>','legacy-thread','["<missing-parent>"]','合同','[]','[]',1,'缓存正文','缓存正文',1)`)
+    .run(accountId, `${inbox.id}:1:1`);
   old.db.insert(schema.locations).values({ folderId: inbox.id, uid: 1, messageId: 'legacy-mail', flags: ['\\Seen'] }).run();
   old.sqlite.prepare('INSERT INTO message_search(rowid,id,content) VALUES (42,?,?)').run('legacy-mail', '合同 缓存 存正 正文');
   old.close();
   const upgraded = new MailStore(filename, migrations);
   try {
     expect(upgraded.list(listSchema.parse({ q: '合同' })).messages[0]).toMatchObject({ id: 'legacy-mail', threadId: 'legacy-thread', cached: true, seen: true });
+    expect(upgraded.pendingBodies(accountId)).toEqual([]);
     expect(upgraded.sqlite.prepare('SELECT * FROM message_search_rows').get()).toEqual({ id: 42, message_id: 'legacy-mail' });
     expect(upgraded.sqlite.prepare('SELECT thread_id FROM thread_keys WHERE account_id = ? AND reference = ?').get(accountId, '<missing-parent>')).toEqual({ thread_id: 'legacy-thread' });
     upgraded.cacheBody('legacy-mail', '新的缓存正文');

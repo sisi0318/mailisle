@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { BodyCache, hashPassword, MailService, Vault } from '@mail/core';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { BodyCache, hashPassword, MailService, UploadStore, Vault } from '@mail/core';
+import { MAX_ATTACHMENT_BYTES } from '@mail/shared';
 import { createApp } from './app';
-import { database, record, seedAccount } from '../../../tests/fixtures';
+import { accountConfig, database, record, seedAccount } from '../../../tests/fixtures';
 
 describe('HTTP authentication and local data', () => {
   let directory: string;
@@ -12,8 +12,9 @@ describe('HTTP authentication and local data', () => {
   let app: ReturnType<typeof createApp>;
   let service: MailService;
   beforeEach(async () => {
-    directory = await mkdtemp(join(tmpdir(), 'mail-api-'));
-    store = database(); service = new MailService(store, new Vault(Buffer.alloc(32)), new BodyCache(directory));
+    await mkdir('.test-artifacts', { recursive: true });
+    directory = await mkdtemp(resolve('.test-artifacts/mail-api-'));
+    store = database(); service = new MailService(store, new Vault(Buffer.alloc(32)), new BodyCache(directory), undefined, new UploadStore(store, resolve(directory, 'uploads')));
     app = createApp({ service, passwordHash: await hashPassword('test-login-password'), port: 3000 });
   });
   afterEach(async () => { await service.stop(); store.close(); await rm(directory, { recursive: true, force: true }); });
@@ -55,5 +56,68 @@ describe('HTTP authentication and local data', () => {
   it('limits repeated incorrect logins', async () => {
     for (let i = 0; i < 10; i++) expect((await request('/login', 'POST', { password: 'incorrect-password' })).status).toBe(401);
     expect((await request('/login', 'POST', { password: 'incorrect-password' })).status).toBe(429);
+  });
+
+  it('returns cached CID data through the authenticated body API while attachments stay downloads', async () => {
+    const { inbox } = seedAccount(store);
+    store.applyBatch(inbox, [record()]);
+    const id = (store.sqlite.prepare('SELECT id FROM messages').get() as { id: string }).id;
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l5kAAAAASUVORK5CYII=';
+    await service.cache.save(id, Buffer.from([
+      'MIME-Version: 1.0', 'Content-Type: multipart/related; boundary=test', '',
+      '--test', 'Content-Type: text/html; charset=utf-8', '', '<img src="cid:logo">',
+      '--test', 'Content-Type: image/png', 'Content-ID: <logo>', 'Content-Disposition: inline; filename="logo.png"',
+      'Content-Transfer-Encoding: base64', '', png, '--test--', '',
+    ].join('\r\n')));
+    expect((await request(`/messages/${id}/body`)).status).toBe(401);
+    const cookie = await login();
+    const body = await (await request(`/messages/${id}/body`, 'GET', undefined, cookie)).json();
+    expect(body.inlineImages).toEqual([{ attachmentId: '0', contentId: 'logo', dataUrl: `data:image/png;base64,${png}` }]);
+    const download = await request(`/messages/${id}/attachments/0`, 'GET', undefined, cookie);
+    expect(download.headers.get('content-disposition')).toMatch(/^attachment;/);
+    expect(download.headers.get('content-type')).toBe('application/octet-stream');
+    expect(Buffer.from(await download.arrayBuffer())).toEqual(Buffer.from(png, 'base64'));
+  });
+
+  it('exposes editable settings without stored credentials', async () => {
+    const config = { ...accountConfig(), proxy: 'http://proxy-user:proxy-secret@127.0.0.1:7890' };
+    const id = store.addAccount('测试', config.email, new Vault(Buffer.alloc(32)).encrypt(config));
+    const cookie = await login();
+    const response = await request(`/accounts/${id}`, 'GET', undefined, cookie);
+    const body = await response.json();
+    expect(response.status).toBe(200); expect(body.imap).not.toHaveProperty('password'); expect(body.smtp).not.toHaveProperty('password');
+    expect(JSON.stringify(body)).not.toContain('proxy-secret'); expect(body.proxyDisplay).toBe('http://127.0.0.1:7890');
+    expect((await request(`/accounts/${id}`)).status).toBe(401);
+  });
+
+  it('uploads a real multipart attachment, saves a local draft and removes both on discard', async () => {
+    const { accountId } = seedAccount(store);
+    const cookie = await login();
+    const form = new FormData(); form.set('file', new File([new Uint8Array([0, 1, 255])], '合同.bin', { type: 'application/octet-stream' }));
+    const upload = await app.request('http://127.0.0.1:3000/api/uploads', { method: 'POST', headers: { origin: 'http://127.0.0.1:3000', cookie }, body: form });
+    expect(upload.status).toBe(201);
+    const file = await upload.json(); expect(file.size).toBe(3);
+    expect((await request(`/uploads/${file.id}`)).status).toBe(401);
+    const download = await request(`/uploads/${file.id}`, 'GET', undefined, cookie);
+    expect(download.headers.get('content-disposition')).toMatch(/^attachment;/);
+    expect(Buffer.from(await download.arrayBuffer())).toEqual(Buffer.from([0, 1, 255]));
+    const created = await request('/drafts', 'POST', { accountId, to: '还没填完@', subject: '草稿', text: '内容', attachmentIds: [file.id] }, cookie);
+    expect(created.status).toBe(201);
+    const draft = await created.json(); expect(draft.attachments[0].filename).toBe('合同.bin');
+    const reopened = await (await request(`/drafts/${draft.id}`, 'GET', undefined, cookie)).json();
+    expect(reopened.to).toBe('还没填完@');
+    expect((await (await request('/counts', 'GET', undefined, cookie)).json()).drafts).toBe(1);
+    expect((await request(`/drafts/${draft.id}`)).status).toBe(401);
+    expect((await request(`/drafts/${draft.id}`, 'DELETE', undefined, cookie)).status).toBe(200);
+    expect(store.upload(file.id)).toBeUndefined();
+    expect((await request('/uploads', 'POST', {}, cookie)).status).toBe(415);
+  });
+
+  it('rejects oversized uploads before storing them', async () => {
+    const cookie = await login();
+    const form = new FormData(); form.set('file', new File([new Uint8Array(MAX_ATTACHMENT_BYTES + 1)], 'large.bin'));
+    const response = await app.request('http://127.0.0.1:3000/api/uploads', { method: 'POST', headers: { origin: 'http://127.0.0.1:3000', cookie }, body: form });
+    expect(response.status).toBe(413);
+    expect(store.sqlite.prepare('SELECT count(*) n FROM uploads').get()).toEqual({ n: 0 });
   });
 });

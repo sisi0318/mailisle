@@ -1,8 +1,9 @@
 import DOMPurify from 'dompurify';
+import type { InlineImage } from '@mail/shared';
 
 const inlineImage = /^data:image\/(png|jpeg|gif|webp);base64,/i;
 
-// Mail keeps the sender's CSS, so two things stand between that CSS and the network. The frame's own
+// MailIsle keeps the sender's CSS, so two things stand between that CSS and the network. The frame's own
 // policy below lets nothing load except inline data: images and inline styles, whatever the CSS says.
 // Before that, scrubDeclarations() removes every declaration that names an outside resource, so the
 // policy is a backstop and not the only guard. The frame's sandbox runs no script either way.
@@ -51,7 +52,9 @@ function scrubSheet(css: string): string {
 }
 
 /** Builds the document shown in the sandboxed reader frame and reports how many images were held back. */
-export function mailDocument(html: string): { document: string; blockedImages: number } {
+export function mailDocument(html: string, inlineImages: InlineImage[] = []): { document: string; blockedImages: number; embeddedAttachmentIds: string[] } {
+  const cidImages = new Map(inlineImages.map(image => [image.contentId, image]));
+  const embedded = new Set<string>();
   const body = DOMPurify.sanitize(html, {
     RETURN_DOM: true,
     FORCE_BODY: true, // keeps a leading <style> block, which mail usually has
@@ -65,6 +68,16 @@ export function mailDocument(html: string): { document: string; blockedImages: n
   }
   let blockedImages = 0;
   for (const image of body.querySelectorAll('img')) {
+    const source = image.getAttribute('src') ?? '';
+    if (/^cid:/i.test(source)) {
+      let contentId = source.slice(4);
+      try { contentId = decodeURIComponent(contentId); } catch { /* Invalid URI escapes remain literal IDs. */ }
+      const inline = cidImages.get(contentId.replace(/^<|>$/g, '').trim());
+      if (inline && inlineImage.test(inline.dataUrl)) {
+        image.setAttribute('src', inline.dataUrl);
+        embedded.add(inline.attachmentId);
+      }
+    }
     if (inlineImage.test(image.getAttribute('src') ?? '')) continue;
     const size = Math.min(Number(image.getAttribute('width') ?? 99), Number(image.getAttribute('height') ?? 99));
     if (size <= 2) { image.remove(); continue; } // tracking pixel
@@ -81,5 +94,6 @@ export function mailDocument(html: string): { document: string; blockedImages: n
   return {
     document: `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy}"><style>${baseStyle}</style></head><body>${body.innerHTML}</body></html>`,
     blockedImages,
+    embeddedAttachmentIds: [...embedded],
   };
 }

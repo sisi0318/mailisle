@@ -12,3 +12,8 @@ export function searchExpression(query: string): string | null {
   const tokens = tokenize(query).match(/[\p{L}\p{N}]+/gu);
   return tokens?.length ? `"${tokens.join(' ')}"` : null;
 }
+
+export function previewText(text: string): string {
+  return text.replace(/\[(?:https?:\/\/|cid:)[^\]\r\n]*(?:\]|$)/gi, ' ')
+    .replace(/https?:\/\/[^\s<>]+/gi, ' ').replace(/\s+/g, ' ').trim().slice(0, 180);
+}

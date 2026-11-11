@@ -53,7 +53,7 @@ export const providerPresets: ProviderPreset[] = [
     imap: { host: 'imap.gmail.com', port: 993, security: 'tls' },
     smtp: { host: 'smtp.gmail.com', port: 465, security: 'tls' },
     sentCopy: 'server', passwordLabel: '应用专用密码',
-    hint: '当前版本使用应用专用密码，需要先开启两步验证。部分组织账号不允许使用；Google OAuth 登录将在后续提供。',
+    hint: '可用 Google OAuth 登录，也可在开启两步验证后使用应用专用密码。Workspace 组织账号可能需要管理员批准。',
     helpUrl: 'https://support.google.com/accounts/answer/185833',
   },
   {
@@ -73,13 +73,21 @@ export const providerPresets: ProviderPreset[] = [
     helpUrl: 'https://help.yahoo.com/kb/SLN4075.html',
   },
   {
-    id: 'outlook', name: 'Outlook.com / Hotmail（待支持 OAuth）',
+    id: 'outlook', name: 'Outlook.com / Hotmail',
     domains: ['outlook.com', 'hotmail.com', 'live.com', 'live.cn', 'msn.com'],
     imap: { host: 'outlook.office365.com', port: 993, security: 'tls' },
     smtp: { host: 'smtp-mail.outlook.com', port: 587, security: 'starttls' },
     sentCopy: 'server', passwordLabel: 'OAuth 登录', requiresOAuth: true,
-    hint: 'Outlook.com 要求 OAuth 登录，当前版本尚未实现。参数可查看，暂时无法连接此类账号。',
+    hint: '使用 Microsoft OAuth 登录。请在 Outlook.com 邮件设置中开启 IMAP。',
     helpUrl: 'https://support.microsoft.com/en-us/outlook/pop-imap-and-smtp-settings-for-outlook-com',
+  },
+  {
+    id: 'microsoft365', name: 'Microsoft 365（工作或学校）', domains: [],
+    imap: { host: 'outlook.office365.com', port: 993, security: 'tls' },
+    smtp: { host: 'smtp.office365.com', port: 587, security: 'starttls' },
+    sentCopy: 'server', passwordLabel: 'OAuth 登录', requiresOAuth: true,
+    hint: '使用 Microsoft OAuth 登录。组织管理员需要允许 IMAP、SMTP AUTH 和相应的委托权限。',
+    helpUrl: 'https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth',
   },
 ];
 
