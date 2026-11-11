@@ -75,7 +75,7 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
     setError(''); save.mutate(parsed.data);
   }
   const presetKey = `${providerId}:${preset?.name ?? ''}:${providerId === 'discovered' ? discoveryVersion : 0}`;
-  return <Modal title={accountId ? '邮箱设置' : '连接邮箱'} description={accountId ? '更换收信服务器或登录名会重新同步本地邮件索引，草稿保留。' : '通过 IMAP 和 SMTP 连接，邮件会同步到这台设备。'} onClose={() => { if (!save.isPending && !start.isPending && !authorizing) onClose(); }} wide>
+  return <Modal title={accountId ? '邮箱设置' : '连接邮箱'} description={accountId ? '更换收信服务器或登录名会重新同步本地邮件索引，草稿保留。' : '通过 IMAP 和 SMTP 连接，邮件保存在运行信屿的主机上。'} onClose={() => { if (!save.isPending && !start.isPending && !authorizing) onClose(); }} wide>
     {authorization && <OAuthAuthorization session={authorization} onSaved={saved} onBusy={setAuthorizing} onCancel={() => { setAuthorization(null); start.reset(); }} />}
     <form onSubmit={submit} className="account-form" noValidate style={authorization ? { display: 'none' } : undefined}><fieldset className="form-fields" disabled={save.isPending || start.isPending}>
       <div className="form-grid"><label>邮箱地址<input name="email" type="email" required autoFocus value={email} onChange={event => setEmail(event.target.value)} placeholder="you@example.com" /></label><label>显示名称（选填）<input name="name" defaultValue={settings?.name} placeholder={preset?.name ?? '例如：工作邮箱'} /></label></div>

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { FileText, Inbox, Mail, Menu, Plus, RefreshCw, Search, X } from 'lucide-react';
 import type { Account, ComposeMode, Draft, DraftSummary, Folder, Message, MessagePage, SyncEvent, UnreadCounts } from '@mail/shared';
 import { api, json } from './api';
@@ -21,7 +21,7 @@ export default function App() {
   const query = useQueryClient();
   const session = useQuery({ queryKey: ['session'], queryFn: () => api<{ authenticated: boolean }>('/session'), retry: false });
   useEffect(() => {
-    const expire = () => { query.clear(); query.setQueryData(['session'], { authenticated: false }); };
+    const expire = () => { void clearSession(query); };
     window.addEventListener('session-expired', expire);
     return () => window.removeEventListener('session-expired', expire);
   }, [query]);
@@ -72,7 +72,7 @@ function Mailbox() {
   }, [search]);
 
   useEffect(() => {
-    const events = new EventSource('/api/events');
+    let events: EventSource;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const pending = new Set<string>();
     const refresh = (keys = ['accounts', 'folders', 'messages', 'thread', 'counts', 'drafts']) => {
@@ -80,8 +80,7 @@ function Mailbox() {
       if (timer) return;
       timer = setTimeout(() => { timer = undefined; for (const key of pending) void query.invalidateQueries({ queryKey: [key] }); pending.clear(); }, 400);
     };
-    events.addEventListener('ready', () => { setConnected(true); setSyncing(new Set()); refresh(); });
-    events.addEventListener('update', event => {
+    const updateMessage = (event: Event) => {
       const update = JSON.parse((event as MessageEvent<string>).data) as SyncEvent;
       if (update.messageId) void query.invalidateQueries({ queryKey: ['body', update.messageId] });
       if (update.state) setSyncing(current => {
@@ -90,9 +89,25 @@ function Mailbox() {
         return next;
       });
       refresh(update.type === 'draft' ? ['drafts', 'counts'] : update.contentOnly ? ['messages', 'thread'] : update.type === 'sync' ? ['accounts'] : undefined);
-    });
-    events.onerror = () => { setConnected(false); void query.invalidateQueries({ queryKey: ['session'] }); };
-    return () => { clearTimeout(timer); events.close(); };
+    };
+    const connect = () => {
+      events = new EventSource('/api/events');
+      events.addEventListener('ready', () => { setConnected(true); setSyncing(new Set()); refresh(); });
+      events.addEventListener('update', updateMessage);
+      events.onerror = () => { setConnected(false); void query.invalidateQueries({ queryKey: ['session'] }); };
+    };
+    const resume = () => {
+      if (document.visibilityState === 'hidden') return;
+      events.close(); setConnected(false); connect();
+      refresh(['session', 'accounts', 'folders', 'messages', 'thread', 'counts', 'drafts', 'body']);
+    };
+    connect();
+    window.addEventListener('online', resume);
+    document.addEventListener('visibilitychange', resume);
+    return () => {
+      clearTimeout(timer); events.close();
+      window.removeEventListener('online', resume); document.removeEventListener('visibilitychange', resume);
+    };
   }, [query]);
 
   const flag = useCallback(async (message: Message, patch: FlagPatch) => {
@@ -138,8 +153,7 @@ function Mailbox() {
   }, []);
   async function logout() {
     await api('/logout', { method: 'POST' }).catch(() => undefined);
-    query.clear();
-    query.setQueryData(['session'], { authenticated: false });
+    await clearSession(query);
   }
 
   const account = accountList.find(item => item.id === filter.accountId);
@@ -154,7 +168,7 @@ function Mailbox() {
   } : undefined;
   const empty = searchTerm ? <><Search size={30} strokeWidth={1.3} /><h3>没有找到相关邮件</h3><p>换个关键词试试。后台会逐步补全正文索引。</p></>
     : accountList.length ? <><Inbox size={30} strokeWidth={1.3} /><h3>这里没有邮件</h3><p>同步完成后，来信会出现在这里。</p></>
-    : <><Inbox size={30} strokeWidth={1.3} /><h3>先连接一个邮箱</h3><p>连接后，邮件会同步到这台设备。</p><Button variant="primary" onClick={() => setAccountForm({})}><Plus size={15} />连接邮箱</Button></>;
+    : <><Inbox size={30} strokeWidth={1.3} /><h3>先连接一个邮箱</h3><p>连接后，邮件会同步到运行信屿的主机。</p><Button variant="primary" onClick={() => setAccountForm({})}><Plus size={15} />连接邮箱</Button></>;
   const sidebarProps = { accounts: accountList, folders: folders.data ?? [], filter, syncing, connected, counts: counts.data,
     onNavigate: navigate, onClose: () => setMobileNav(false),
     onEditAccount: (item: Account) => { setMobileNav(false); setAccountForm({ id: item.id }); },
@@ -190,7 +204,7 @@ function Mailbox() {
             : <DraftList drafts={drafts.data ?? []} accounts={accountList} onOpen={id => { void openDraft(id); }} onDelete={id => { void deleteDraft(id); }} />
             : <MessageList key={JSON.stringify([filter, searchTerm])} messages={messages} rows={rows} selectedId={selected?.id} onSelect={select} accountMark={accountMark} empty={empty} />}
         </section>
-        {isDrafts ? <section className="reader-empty"><FileText size={40} strokeWidth={1.1} /><p>选择一封草稿继续编辑</p><small>草稿保存在本机服务，不会同步到邮箱服务商。</small></section> : selectedMessage
+        {isDrafts ? <section className="reader-empty"><FileText size={40} strokeWidth={1.1} /><p>选择一封草稿继续编辑</p><small>草稿保存在信屿服务端，可在其他设备继续编辑，不会同步到邮箱服务商。</small></section> : selectedMessage
           ? <Reader key={selectedMessage.id} message={selectedMessage} folders={folders.data ?? []} composing={prepare.isPending} onReply={(mode, includeAttachments = true) => prepare.mutate({ messageId: selectedMessage.id, mode, includeAttachments })}
               onBack={() => setSelected(null)} onSelect={select} onFlag={patch => { void flag(selectedMessage, patch); }} onMoved={() => setSelected(null)} />
           : <ReaderEmpty />}
@@ -200,4 +214,11 @@ function Mailbox() {
     {oauthSettings && <Suspense fallback={null}><OAuthSettings onClose={() => setOAuthSettings(false)} /></Suspense>}
     {composer && <Suspense fallback={null}><Composer key={composer.draft?.id ?? 'new'} accounts={accountList} draft={composer.draft} accountId={composer.accountId} onClose={() => setComposer(null)} onSent={setNotice} /></Suspense>}
   </div>;
+}
+
+async function clearSession(query: QueryClient) {
+  await query.cancelQueries();
+  // Preserve the active session observer so logout can render the login screen immediately.
+  query.setQueryData(['session'], { authenticated: false });
+  query.removeQueries({ predicate: item => item.queryKey[0] !== 'session' });
 }

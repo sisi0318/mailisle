@@ -35,6 +35,12 @@ export class MailStore {
   setSetting(key: string, value: string) {
     this.db.insert(schema.settings).values({ key, value }).onConflictDoUpdate({ target: schema.settings.key, set: { value } }).run();
   }
+  webSession(tokenHash: string) { return this.db.select().from(schema.webSessions).where(eq(schema.webSessions.tokenHash, tokenHash)).get(); }
+  addWebSession(tokenHash: string, expiresAt: number) {
+    this.db.delete(schema.webSessions).where(lt(schema.webSessions.expiresAt, Date.now())).run();
+    this.db.insert(schema.webSessions).values({ tokenHash, expiresAt }).run();
+  }
+  deleteWebSession(tokenHash: string) { this.db.delete(schema.webSessions).where(eq(schema.webSessions.tokenHash, tokenHash)).run(); }
   accounts(): Account[] {
     return this.db.select({ id: schema.accounts.id, name: schema.accounts.name, email: schema.accounts.email,
       lastSync: schema.accounts.lastSync, error: schema.accounts.error }).from(schema.accounts).all();

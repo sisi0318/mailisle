@@ -2,6 +2,7 @@
   "name": "@mail/server",
   "private": true,
   "type": "module",
+  "files": ["dist"],
   "dependencies": {
     "@hono/node-server": "^1.19.0",
     "@mail/core": "workspace:*",

@@ -34,10 +34,10 @@ const folderIcons: Record<FolderRole, LucideIcon> = { inbox: Inbox, drafts: File
 
 export function Sidebar({ accounts, folders, filter, syncing, connected, onNavigate, onCompose, onAddAccount, onRemoveAccount, onEditAccount, onLogout, onOAuthSettings, counts, mobileOpen, onClose }: Props) {
   const allFolders = folderList(folders);
-  const status = syncing.size ? '正在同步' : connected ? '已连接本机服务' : '正在重新连接…';
+  const status = syncing.size ? '正在同步' : connected ? '已连接邮件服务' : '正在重新连接…';
   return <aside className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`} id={mobileOpen ? 'mobile-mail-sidebar' : 'mail-sidebar'} aria-label="邮箱导航">
     <Button className="sidebar-close" variant="ghost" aria-label="关闭邮箱导航" onClick={onClose}><X size={20} /></Button>
-    <div className="brand" title="MailIsle"><Mail size={22} /><span>信屿</span><span className="local-badge">本机</span></div>
+    <div className="brand" title="MailIsle"><Mail size={22} /><span>信屿</span><span className="local-badge">自部署</span></div>
     <Button variant="primary" className="compose-button" disabled={!accounts.length} onClick={onCompose}><SquarePen size={17} /><span>写邮件</span></Button>
 
     <nav className="main-nav" aria-label="视图">

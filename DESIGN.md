@@ -203,11 +203,11 @@ Thunderbird 源码里还有 Yahoo、AOL、Fastmail 等服务商的预置值,需�
 
 | 项 | 要求 |
 |---|---|
-| 监听地址 | 默认只监听 `127.0.0.1`;对外监听要显式开启,并强制先设密码 |
+| 监听地址 | 按 2026-11-11 的部署要求,默认监听 `0.0.0.0`,启动前必须设置有效主密码;可显式限制为 `127.0.0.1` |
 | 本机鉴权 | 只监听本机也要登录,并校验 `Host` 和 `Origin` 头,防 DNS rebinding 和跨站请求 |
-| 登录会话 | `HttpOnly` + `SameSite=Strict` 的 cookie;登录密码用 `node:crypto` 的 scrypt 做哈希 |
+| 登录会话 | `HttpOnly` + `SameSite=Strict` 的 cookie,HTTPS 入口加 Secure;登录密码用 scrypt 哈希;会话摘要持久保存,7 天到期 |
 | 远程访问 | 优先 Tailscale 或 WireGuard 这类私有网络 |
-| 公网暴露 | 不推荐;一定要做的话需要 TLS、强密码、TOTP 或 passkey、登录限速。不要裸映射 HTTP |
+| HTTPS | 可选:反向代理终止 TLS,或应用读取 PEM 证书;HTTP 不保护密码和会话的传输,公网建议 HTTPS,不强制 TOTP 或 passkey |
 | 邮件 HTML | 先用 DOMPurify 清洗,再放进不带 `allow-scripts` 和 `allow-same-origin` 的 sandbox iframe |
 | 远程图片 | 默认不加载,或走核心进程的图片代理,防追踪 |
 | 凭据存储 | refresh token、授权码、密码一律用 AES-256-GCM 加密后落盘 |
@@ -273,7 +273,7 @@ Thunderbird 源码里还有 Yahoo、AOL、Fastmail 等服务商的预置值,需�
 |---|---|---|
 | 1 | 通用 IMAP/SMTP 适配器、本地库、统一收件箱、搜索、基本读写界面、本机登录 | 接入 QQ、163、iCloud、Yahoo、自建邮箱,以及用应用专用密码的 Gmail |
 | 2 | IMAP 加 XOAUTH2;本机回调和粘贴回调两种授权流程;预置 client ID 和设置里的修改入口 | 接入 Gmail 和 Outlook,不用写新适配器 |
-| 3 | 远程访问加固(对外监听开关、TOTP)、PWA、通知 | 手机上安全地用 |
+| 3 | 全网卡监听、可选 HTTPS、持久会话、多端重连;之后做 PWA、通知及可选两步验证 | 小主机常驻,手机和电脑使用同一个 Web 界面 |
 | 4 | 原生适配器:Gmail API、Microsoft Graph、JMAP | 按需做,换取更好的标签支持和同步效率 |
 | 5 | Proton sidecar、Electron 桌面壳、私有协议插件 | 按需做 |
 

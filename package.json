@@ -12,6 +12,7 @@
     "dev:web": "pnpm --filter @mail/web dev",
     "build": "pnpm --filter @mail/web build && tsup --config apps/server/tsup.config.ts",
     "start": "node apps/server/dist/index.js",
+    "password": "node apps/server/dist/password.js",
     "check": "tsc --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts"

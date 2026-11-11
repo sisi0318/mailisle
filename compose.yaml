@@ -1,0 +1,15 @@
+services:
+  mailisle:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MAIL_DATA_DIR: /app/.data
+    ports:
+      - '${MAIL_BIND_IP:-0.0.0.0}:${MAIL_PORT:-3000}:${MAIL_PORT:-3000}'
+    volumes:
+      - mailisle-data:/app/.data
+      - ./certs:/app/certs:ro
+
+volumes:
+  mailisle-data:

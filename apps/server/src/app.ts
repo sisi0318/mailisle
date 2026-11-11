@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { Hono } from 'hono';
@@ -9,25 +9,28 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { accountSchema, accountUpdateSchema, composeSchema, discoverySchema, draftSchema, flagsSchema, listSchema, loginSchema, MAX_ATTACHMENT_BYTES, moveSchema, sendSchema, type SyncEvent } from '@mail/shared';
 import { discoverAccount, publicError, verifyPassword, type MailService } from '@mail/core';
 import { oauthStartSchema, oauthProviderSchema, oauthClientUpdateSchema, oauthCallbackSchema } from '@mail/shared';
+import { createAccessPolicy } from './access';
+import { SESSION_SECONDS, WebSessions } from './sessions';
 
-type Options = { service: MailService; passwordHash: string; port: number; webRoot?: string; docsRoot?: string; dev?: boolean };
+type Options = { service: MailService; passwordHash: string; port: number; webRoot?: string; docsRoot?: string; dev?: boolean; publicUrl?: string; https?: boolean };
 
-export function createApp({ service, passwordHash, port, webRoot, docsRoot = resolve('docs'), dev = false }: Options) {
-  const app = new Hono();
-  const sessions = new Map<string, number>();
-  const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
-  const origins = new Set([...allowedHosts].map(host => `http://${host}`));
-  if (dev) for (const host of ['127.0.0.1', 'localhost']) origins.add(`http://${host}:5173`);
+export function createApp({ service, passwordHash, port, webRoot, docsRoot = resolve('docs'), dev = false, publicUrl, https = false }: Options) {
+  const app = new Hono<{ Variables: { secureCookie: boolean } }>();
+  const sessions = new WebSessions(service.store);
+  const sessionEvents = new EventEmitter();
+  const access = createAccessPolicy({ port, publicUrl, https, dev });
   let loginAttempts = 0;
   let loginWindow = Date.now();
-  const authenticated = (token: string | undefined) => !!token && (sessions.get(token) ?? 0) > Date.now();
+  const authenticated = (token: string | undefined) => sessions.authenticated(token);
 
   app.use('*', async (c, next) => {
-    if (!allowedHosts.has(c.req.header('host') ?? new URL(c.req.url).host)) return c.json({ error: '不允许的 Host' }, 403);
+    const expectedOrigin = access.originForHost(c.req.header('host') ?? new URL(c.req.url).host);
+    if (!expectedOrigin) return c.json({ error: '不允许的 Host；使用域名访问时请设置 MAIL_PUBLIC_URL' }, 403);
     const origin = c.req.header('origin');
-    if (origin && !origins.has(origin)) return c.json({ error: '不允许的请求来源' }, 403);
-    if (c.req.header('sec-fetch-site') === 'cross-site') return c.json({ error: '不允许跨站请求' }, 403);
+    if (origin && !access.acceptsOrigin(expectedOrigin, origin)) return c.json({ error: '不允许的请求来源' }, 403);
+    if (c.req.path.startsWith('/api/') && c.req.header('sec-fetch-site') === 'cross-site') return c.json({ error: '不允许跨站请求' }, 403);
     if (!['GET', 'HEAD'].includes(c.req.method) && !origin) return c.json({ error: '请求缺少 Origin' }, 403);
+    c.set('secureCookie', expectedOrigin.startsWith('https:'));
     c.header('X-Content-Type-Options', 'nosniff');
     c.header('Referrer-Policy', 'no-referrer');
     c.header('X-Frame-Options', 'DENY');
@@ -49,16 +52,16 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     if (++loginAttempts > 10) return c.json({ error: '登录尝试过于频繁，请一分钟后重试' }, 429);
     if (!await verifyPassword(parsed.data.password, passwordHash)) return c.json({ error: '密码不正确' }, 401);
     loginAttempts = 0;
-    for (const [token, expires] of sessions) if (expires < Date.now()) sessions.delete(token);
-    const token = randomBytes(32).toString('hex');
-    sessions.set(token, Date.now() + 7 * 86_400_000);
-    setCookie(c, 'mail_session', token, { httpOnly: true, sameSite: 'Strict', path: '/', maxAge: 7 * 86_400 });
+    const token = sessions.create();
+    setCookie(c, 'mail_session', token, { httpOnly: true, sameSite: 'Strict', secure: c.get('secureCookie'), path: '/', maxAge: SESSION_SECONDS });
     return c.json({ authenticated: true });
   });
   app.post('/api/logout', c => {
-    service.oauthFlow.cancelOwner(getCookie(c, 'mail_session') ?? '');
-    sessions.delete(getCookie(c, 'mail_session') ?? '');
-    deleteCookie(c, 'mail_session', { path: '/' });
+    const token = getCookie(c, 'mail_session');
+    service.oauthFlow.cancelOwner(token ?? '');
+    sessions.revoke(token);
+    sessionEvents.emit('logout', token);
+    deleteCookie(c, 'mail_session', { path: '/', secure: c.get('secureCookie'), httpOnly: true, sameSite: 'Strict' });
     return c.json({ ok: true });
   });
   app.get('/api/accounts', c => c.json(service.store.accounts()));
@@ -218,13 +221,18 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     const token = getCookie(c, 'mail_session');
     await stream.writeSSE({ event: 'ready', data: '{}' });
     await new Promise<void>(resolve => {
-      const send = (event: SyncEvent) => { void stream.writeSSE({ event: 'update', data: JSON.stringify(event) }).catch(cleanup); };
+      const send = (event: SyncEvent) => {
+        if (!authenticated(token)) { cleanup(); return; }
+        void stream.writeSSE({ event: 'update', data: JSON.stringify(event) }).catch(cleanup);
+      };
+      const logout = (revoked: string) => { if (revoked === token) cleanup(); };
       const heartbeat = setInterval(() => {
         if (!authenticated(token)) { cleanup(); return; }
         void stream.writeSSE({ event: 'ping', data: '{}' }).catch(cleanup);
       }, 15_000);
-      function cleanup() { clearInterval(heartbeat); service.events.off('update', send); resolve(); }
+      function cleanup() { clearInterval(heartbeat); service.events.off('update', send); sessionEvents.off('logout', logout); resolve(); }
       service.events.on('update', send);
+      sessionEvents.on('logout', logout);
       stream.onAbort(cleanup);
     });
   }));

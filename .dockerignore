@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+!.env.example
+.data
+.test-artifacts
+certs
+**/node_modules
+**/dist
+**/coverage
+**/*.log

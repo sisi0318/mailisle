@@ -46,6 +46,9 @@ export const uploads = sqliteTable('uploads', {
   id: text('id').primaryKey(), filename: text('filename').notNull(), mimeType: text('mime_type').notNull(),
   size: integer('size').notNull(), createdAt: integer('created_at').notNull(),
 });
+export const webSessions = sqliteTable('web_sessions', {
+  tokenHash: text('token_hash').primaryKey(), expiresAt: integer('expires_at').notNull(),
+}, table => [index('web_sessions_expires').on(table.expiresAt)]);
 export const drafts = sqliteTable('drafts', {
   id: text('id').primaryKey(), accountId: text('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
   to: text('to_text').notNull().default(''), cc: text('cc_text').notNull().default(''), bcc: text('bcc_text').notNull().default(''),

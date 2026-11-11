@@ -1,0 +1,133 @@
+# 部署与远程访问
+
+信屿作为一个服务运行在小主机上，手机和电脑连接同一地址，共享邮箱、已读状态、星标、文件夹和已保存草稿。无需在每台设备单独添加邮箱。一个实例只有一个主人；登录后拥有该实例全部邮箱的访问权。
+
+## 直接运行：先让局域网可用
+
+1. 按 README 安装依赖并执行 `pnpm build`。
+2. 将 `.env.example` 复制为 `.env`，设置自己的主密码。至少 12 个字符，示例密码不能用于对外监听。
+3. 执行 `pnpm start`，保持进程运行。
+4. 本机访问 `http://127.0.0.1:3000`；其他设备访问 `http://小主机IP:3000`。
+
+默认 `MAIL_HOST=0.0.0.0` 监听所有 IPv4 网卡。需要 IPv6 时可设为 `::`；只通过本机反向代理访问时可设为 `127.0.0.1`。系统防火墙需要允许对应端口。应用不会自动修改防火墙或路由器；外网还需已有的 VPN、隧道或端口转发。
+
+IP 地址直连不需要额外白名单，Docker 端口映射后的 IP 地址也可使用。通过域名或局域网主机名访问时设置：
+
+```dotenv
+MAIL_PUBLIC_URL=http://mail.example.com:3000
+```
+
+填写浏览器实际访问的源，包括协议和非默认端口，不包含子路径或账号密码。应用保留来源校验，拒绝未配置的 DNS 主机名及跨站 API 请求。
+
+HTTP 不加密登录密码、会话或邮件。HTTPS 可选；接口需要登录并不能替代传输加密。在不可信网络或公网使用时，建议选择下面一种 HTTPS 方式。
+
+## 可选 HTTPS：由反向代理提供
+
+已有 Nginx、Caddy、NAS 反向代理或 Tailscale Serve 时，可以继续让应用使用 HTTP。配置：
+
+```dotenv
+MAIL_HOST=127.0.0.1
+MAIL_PORT=3000
+MAIL_PUBLIC_URL=https://mail.example.com
+```
+
+反向代理应保留原始 `Host`，将请求转发到 `http://127.0.0.1:3000`，并允许 `/api/events` 持续流式传输。应用根据明确配置的访问地址为登录 cookie 设置 `Secure`，不信任请求自行声明的 `X-Forwarded-Host` 或 `X-Forwarded-Proto`。
+
+Caddy 配置示例（域名应指向这台主机，并满足 Caddy 的证书签发条件）：
+
+```caddyfile
+mail.example.com {
+    reverse_proxy 127.0.0.1:3000
+}
+```
+
+如果使用 Nginx，给事件接口关闭代理缓冲并提高读取超时，例如 `proxy_buffering off` 和 `proxy_read_timeout 1h`。其他 API 也应保留原始 Host。
+
+参考：[Caddy 反向代理](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)、[Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve)。
+
+## 可选 HTTPS：应用直接读取证书
+
+准备与访问域名匹配的 PEM 证书和私钥，然后设置：
+
+```dotenv
+MAIL_HOST=0.0.0.0
+MAIL_PORT=3000
+MAIL_PUBLIC_URL=https://mail.example.com:3000
+MAIL_TLS_CERT=certs/fullchain.pem
+MAIL_TLS_KEY=certs/privkey.pem
+```
+
+两个路径必须一起设置，可以是绝对路径，也可以相对于启动目录。启动后此端口只接受 HTTPS；证书更新后重启进程。应用不负责签发或续期证书。`certs/` 已被 Git 忽略，不要提交私钥。
+
+## Docker
+
+仓库提供多阶段 Dockerfile 和 Compose 配置，不需要安装宿主机 Node.js。运行：
+
+```sh
+# 先复制并编辑 .env，设好自己的主密码
+docker compose up -d --build
+docker compose logs -f mailisle
+```
+
+默认发布 3000 端口并使用具名数据卷 `mailisle-data`。设置 `MAIL_PORT` 可以同时调整应用端口与映射端口。只希望把 Docker 端口发布到宿主机本地时，在 `.env` 增加 `MAIL_BIND_IP=127.0.0.1`；容器内的 `MAIL_HOST` 仍应保持 `0.0.0.0`。
+
+可选证书目录 `./certs` 以只读方式挂载到容器 `/app/certs`。需要应用 HTTPS 时使用上述相对证书路径。证书由宿主机反代提供时，保持证书变量为空。
+
+启动策略为 `unless-stopped`。小主机需要将 Docker 服务设置为开机启动。更新代码后重新执行 `docker compose up -d --build`，数据卷及有效登录会话会保留；不要用 `docker compose down -v` 做普通更新，该命令会删除数据卷。
+
+容器内的 `127.0.0.1` 指向容器本身，邮箱代理若运行在宿主机，应使用容器可达的宿主机地址。Docker Desktop 可按其网络配置使用 `host.docker.internal`。
+
+当前开发环境没有 Docker 引擎；构建文件仍需在目标 Docker 主机上完成镜像构建与运行验收。Node 生产构建、HTTP/HTTPS 和运行包可在本机独立检查。
+
+## 不用 Docker 时的开机自启
+
+Linux 可用 systemd，以下示例假设代码在 `/opt/mailisle`、Node 位于 `/usr/bin/node`，且已有专用的 `mailisle` 用户。请按实际安装路径修改：
+
+```ini
+[Unit]
+Description=MailIsle
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mailisle
+WorkingDirectory=/opt/mailisle
+ExecStart=/usr/bin/node apps/server/dist/index.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+将文件保存为 `/etc/systemd/system/mailisle.service`，确认运行用户可以读取 `.env` 并写入数据目录后执行 `sudo systemctl daemon-reload` 和 `sudo systemctl enable --now mailisle`。进程会从工作目录读取 `.env`。
+
+Windows 可在任务计划程序中创建启动任务：程序使用实际的 `node.exe` 路径，参数为 `apps/server/dist/index.js`，起始目录为仓库根目录，并配置失败后重启。需要未登录时也运行则选择对应选项，并使用有权访问数据目录的 Windows 账号。
+
+## 多端行为与备份
+
+### 已有实例修改主密码
+
+主密码也用于加密邮箱凭据，不能只编辑 `.env` 后直接重启。Node 部署可先停止信屿，再在仓库根目录执行：
+
+```sh
+pnpm password
+```
+
+命令会要求输入两遍新密码，输入不回显。也可以运行 `pnpm password --generate` 生成强随机密码并写入本机 `.env`，密码不会打印在终端。命令依赖生产构建，新下载代码时先执行 `pnpm build`。
+
+换密会重新加密已有账号及 OAuth 客户端凭据，更新 `.env`，并撤销旧登录会话；邮件、草稿和账号 ID 保留。修改前自动把数据库及旧 `.env` 备份到数据目录的 `backups/password-时间戳`。主机目录与数据库文件必须可写，旧主密码必须能解密当前数据。确认新密码可用后，备份也需要按邮件数据同样保护。
+
+命令检查配置端口是否仍在监听；运行中的服务必须先停止，避免它继续使用旧密钥写入凭据。已有示例主密码的实例可以暂设 `MAIL_HOST=127.0.0.1` 保持本机访问，换密完成后再恢复全网卡监听。Docker 部署需要先停容器，在能同时访问其完整数据目录和宿主机 `.env` 的 Node 环境执行迁移，再启动容器。
+
+### 日常使用
+
+- 每台设备独立登录，有效期为登录后的 7 天；重启服务继续有效，退出只撤销当前会话。
+- 已读、星标、移动及草稿变更通过 SSE 通知其他页面。恢复网络或返回浏览器前台时重新连接并刷新。
+- 草稿需要先保存，才能在另一台设备继续打开；同一草稿不支持同时编辑合并。
+- 远程添加 OAuth 邮箱时使用“粘贴完整回调网址”，不需要将临时授权回调端口暴露到外网。
+- 备份前先停止服务，再完整备份 `MAIL_DATA_DIR`（Docker 中对应数据卷）及 `.env` 中的主密码。不要只复制运行中的 SQLite 主文件而遗漏 WAL。
+- 恢复时使用与该备份配套的主密码。数据库、正文及附件目录本身不做整盘加密，应保护备份的访问权限。
+
+本阶段没有引入强制 HTTPS、强制两步验证、多用户角色或离线写操作队列。PWA 与后台推送通知另行实现。
