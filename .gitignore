@@ -8,3 +8,4 @@ coverage/
 *.log
 .test-artifacts/
 certs/
+docs/audit_report.md

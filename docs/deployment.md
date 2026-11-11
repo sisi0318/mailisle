@@ -41,7 +41,16 @@ mail.example.com {
 }
 ```
 
-如果使用 Nginx，给事件接口关闭代理缓冲并提高读取超时，例如 `proxy_buffering off` 和 `proxy_read_timeout 1h`。其他 API 也应保留原始 Host。
+如果使用 Nginx，给事件接口关闭代理缓冲并提高读取超时，例如 `proxy_buffering off` 和 `proxy_read_timeout 1h`。Nginx 默认不保留原始 Host，需要显式写上：
+
+```nginx
+proxy_set_header Host $host;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+```
+
+登录限速按客户端地址计数。反向代理和信屿在同一台主机时，信屿从 `X-Forwarded-For` 的最后一项读取客户端地址；代理不追加这个头的话，所有访问者会共用一个计数。Caddy 默认会追加。
+
+应用自己不发送 HSTS 响应头：它对整个主机名的所有端口生效，会让同一主机上其他仍用 HTTP 的服务打不开。需要时在反向代理上为专用域名开启。
 
 参考：[Caddy 反向代理](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)、[Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve)。
 
@@ -119,7 +128,7 @@ pnpm password
 
 换密会重新加密已有账号及 OAuth 客户端凭据，更新 `.env`，并撤销旧登录会话；邮件、草稿和账号 ID 保留。修改前自动把数据库及旧 `.env` 备份到数据目录的 `backups/password-时间戳`。主机目录与数据库文件必须可写，旧主密码必须能解密当前数据。确认新密码可用后，备份也需要按邮件数据同样保护。
 
-命令检查配置端口是否仍在监听；运行中的服务必须先停止，避免它继续使用旧密钥写入凭据。已有示例主密码的实例可以暂设 `MAIL_HOST=127.0.0.1` 保持本机访问，换密完成后再恢复全网卡监听。Docker 部署需要先停容器，在能同时访问其完整数据目录和宿主机 `.env` 的 Node 环境执行迁移，再启动容器。
+命令检查配置端口是否仍在监听；运行中的服务必须先停止，避免它继续使用旧密钥写入凭据。已有示例主密码的实例可以暂设 `MAIL_HOST=127.0.0.1` 并去掉指向外部地址的 `MAIL_PUBLIC_URL` 保持本机访问，换密完成后再恢复原来的配置。新密码写入 `.env` 时使用单引号，Docker Compose 不会把其中的 `$` 当作变量展开。Docker 部署需要先停容器，在能同时访问其完整数据目录和宿主机 `.env` 的 Node 环境执行迁移，再启动容器。
 
 ### 日常使用
 

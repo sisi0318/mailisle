@@ -12,6 +12,7 @@ const policy = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; ba
 const baseStyle = [
   'html{color-scheme:light}',
   'body{margin:0;padding:20px 28px;font:15px/1.7 system-ui,"Segoe UI","Microsoft YaHei",sans-serif;color:#1f2f28;background:#fff;overflow-wrap:anywhere}',
+  '@media(max-width:600px){body{padding:16px}}',
   'img{max-width:100%;height:auto}',
   'table{max-width:100%}',
   'a{color:#176c54}',
@@ -33,6 +34,9 @@ function scrubDeclarations(style: CSSStyleDeclaration) {
     const value = style.getPropertyValue(property);
     if (property.startsWith('--') ? /[(\\]/.test(value) : fetchesResource.test(value)) style.removeProperty(property);
   }
+  // A shorthand that contains var() is kept unparsed and its longhands read back empty, so a url() next to
+  // the var() is invisible above. The whole block goes rather than letting it through.
+  if (fetchesResource.test(style.cssText)) style.cssText = '';
 }
 
 function scrubRules(container: { cssRules: CSSRuleList; deleteRule(index: number): void }) {
@@ -41,6 +45,8 @@ function scrubRules(container: { cssRules: CSSRuleList; deleteRule(index: number
     if (rule instanceof CSSImportRule || rule instanceof CSSFontFaceRule) { container.deleteRule(i); continue; }
     if ('style' in rule) scrubDeclarations(rule.style as CSSStyleDeclaration);
     if ('cssRules' in rule) scrubRules(rule as CSSGroupingRule);
+    // Rule types this function does not know by name, present or future, are dropped if they still name a resource.
+    if (fetchesResource.test(rule.cssText)) container.deleteRule(i);
   }
 }
 
@@ -48,7 +54,10 @@ function scrubSheet(css: string): string {
   const sheet = new CSSStyleSheet();
   try { sheet.replaceSync(css); } catch { return ''; }
   scrubRules(sheet);
-  return [...sheet.cssRules].map(rule => rule.cssText).join('\n');
+  // The browser writes strings back with their escapes resolved, so `"\3c /style\3e "` returns as a literal
+  // `</style>` that would close the element early and let the rest of the sheet in as markup. `<\/` is the
+  // same character sequence to a CSS parser and nothing to an HTML parser.
+  return [...sheet.cssRules].map(rule => rule.cssText).join('\n').replace(/<\//g, '<\\/');
 }
 
 /** Builds the document shown in the sandboxed reader frame and reports how many images were held back. */
@@ -79,7 +88,9 @@ export function mailDocument(html: string, inlineImages: InlineImage[] = []): { 
       }
     }
     if (inlineImage.test(image.getAttribute('src') ?? '')) continue;
-    const size = Math.min(Number(image.getAttribute('width') ?? 99), Number(image.getAttribute('height') ?? 99));
+    // A missing or empty size is unknown, not zero.
+    const dimension = (name: string) => { const value = parseInt(image.getAttribute(name) ?? '', 10); return Number.isNaN(value) ? 99 : value; };
+    const size = Math.min(dimension('width'), dimension('height'));
     if (size <= 2) { image.remove(); continue; } // tracking pixel
     blockedImages++;
     // A held-back image leaves its description behind as a small label; one without a description is decoration.
@@ -90,9 +101,11 @@ export function mailDocument(html: string, inlineImages: InlineImage[] = []): { 
     label.textContent = description;
     image.replaceWith(label);
   }
-  for (const link of body.querySelectorAll('a')) { link.target = '_blank'; link.rel = 'noopener noreferrer'; }
+  // Image maps link out as well. Without a target they would load the destination inside the reader frame.
+  for (const link of body.querySelectorAll<HTMLAnchorElement | HTMLAreaElement>('a, area')) { link.target = '_blank'; link.rel = 'noopener noreferrer'; link.removeAttribute('download'); }
   return {
-    document: `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy}"><style>${baseStyle}</style></head><body>${body.innerHTML}</body></html>`,
+    // Browsers may resolve the host names of links ahead of a click; for mail that would tell the sender it was opened.
+    document: `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy}"><meta http-equiv="x-dns-prefetch-control" content="off"><style>${baseStyle}</style></head><body>${body.innerHTML}</body></html>`,
     blockedImages,
     embeddedAttachmentIds: [...embedded],
   };

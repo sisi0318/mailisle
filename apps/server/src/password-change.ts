@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { parseEnv } from 'node:util';
 import { MailStore } from '@mail/db';
@@ -13,7 +13,7 @@ export async function changeMasterPassword(envFile: string, migrationsDir: strin
   const dataDir = resolve(dirname(envFile), env.MAIL_DATA_DIR || '.data');
   if (!existsSync(join(dataDir, 'mail.sqlite'))) throw new Error('没有找到已有数据库，请先确认 .env 和数据目录');
   if (/[\r\n]/.test(env.MAIL_MASTER_PASSWORD ?? '')) throw new Error('换密工具要求 .env 中的旧主密码写在单独一行');
-  const nextEnv = `${text.replace(/^[ \t]*(?:export\s+)?MAIL_MASTER_PASSWORD\s*=.*(?:\r?\n|$)/gm, '').trimEnd()}\nMAIL_MASTER_PASSWORD=${JSON.stringify(newPassword)}\n`;
+  const nextEnv = `${text.replace(/^[ \t]*(?:export\s+)?MAIL_MASTER_PASSWORD\s*=.*(?:\r?\n|$)/gm, '').trimEnd()}\nMAIL_MASTER_PASSWORD=${quoteEnv(newPassword)}\n`;
   if (parseEnv(nextEnv).MAIL_MASTER_PASSWORD !== newPassword) throw new Error('新密码中的引号或换行无法写入 .env，请换一个密码或使用 --generate');
   const store = new MailStore(join(dataDir, 'mail.sqlite'), migrationsDir);
   const pending = `${envFile}.password-pending-${randomBytes(6).toString('hex')}`;
@@ -32,9 +32,11 @@ export async function changeMasterPassword(envFile: string, migrationsDir: strin
     });
     const passwordHash = await hashPassword(newPassword);
     const backupDir = join(dataDir, 'backups', `password-${Date.now()}`);
-    mkdirSync(backupDir, { recursive: true });
+    // The backup pairs the old password with the data it unlocks, so only the owner may read it.
+    mkdirSync(backupDir, { recursive: true, mode: 0o700 });
     await store.sqlite.backup(join(backupDir, 'mail.sqlite'));
     copyFileSync(envFile, join(backupDir, '.env'));
+    for (const name of ['mail.sqlite', '.env']) chmodSync(join(backupDir, name), 0o600);
     writeFileSync(pending, nextEnv, { mode: 0o600 });
     store.sqlite.transaction(() => {
       for (const account of accountValues) store.updateAccountCredentials(account.id, account.encrypted);
@@ -47,4 +49,14 @@ export async function changeMasterPassword(envFile: string, migrationsDir: strin
     })();
     return { accounts: accountValues.length, backupDir };
   } finally { store.close(); rmSync(pending, { force: true }); }
+}
+
+/**
+ * Single quotes are taken literally by Node and by Docker Compose alike. Inside double quotes Compose
+ * expands `$`, which would start the container with a different password than the one just set.
+ */
+function quoteEnv(value: string) {
+  if (!/['\r\n]/.test(value)) return `'${value}'`;
+  if (/[$`\\]/.test(value)) throw new Error('同时包含单引号和 $、反引号或反斜杠的密码无法可靠地写入 .env，请换一个密码或使用 --generate');
+  return JSON.stringify(value);
 }

@@ -9,8 +9,9 @@ export function tokenize(text: string): string {
 
 export function searchExpression(query: string): string | null {
   if ([...query.matchAll(cjkRun)].some(([run]) => [...run].length === 1)) return null;
-  const tokens = tokenize(query).match(/[\p{L}\p{N}]+/gu);
-  return tokens?.length ? `"${tokens.join(' ')}"` : null;
+  // Each word typed is its own phrase and all of them must occur, in any order and in any field.
+  const phrases = query.split(/\s+/).map(term => tokenize(term).match(/[\p{L}\p{N}]+/gu)).filter(tokens => tokens?.length).map(tokens => `"${tokens!.join(' ')}"`);
+  return phrases.length ? phrases.join(' ') : null;
 }
 
 export function previewText(text: string): string {

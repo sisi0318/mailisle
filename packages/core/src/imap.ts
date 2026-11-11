@@ -163,7 +163,8 @@ export class ImapAdapter implements MailAdapter {
       const warnings: string[] = [];
       if (result.rejected.length) warnings.push(`部分收件人被服务器拒绝：${result.rejected.join('、')}。请勿向已接受的收件人重复发送。`);
       if (this.account.sentCopy === 'append') {
-        try { await this.client.append(sentPath!, raw, ['\\Seen']); }
+        // A slow SMTP upload can outlast the idle timeout of the IMAP connection, so it is reopened when needed.
+        try { await this.connect(); await this.client.append(sentPath!, raw, ['\\Seen']); }
         catch { warnings.push('邮件已发送，但保存已发送副本失败。请勿重复发送。'); }
       }
       return { messageId: result.messageId, ...(warnings.length ? { warning: warnings.join(' ') } : {}) };
@@ -270,7 +271,8 @@ async function metadata(message: FetchMessageObject): Promise<MailMetadata> {
   const address = (items?: { name?: string; address?: string }[]): Address[] => (items ?? []).map(item => ({ name: item.name ?? '', address: item.address ?? '' }));
   return {
     uid: message.uid, remoteId: message.emailId ?? null, providerThreadId: message.threadId ?? null,
-    messageId: envelope?.messageId ?? '', references: [...new Set(refs)], subject: envelope?.subject ?? '',
+    // Real threads never come close to this many references; a crafted header is cut to the most recent ones.
+    messageId: envelope?.messageId ?? '', references: [...new Set(refs)].slice(-200), subject: envelope?.subject ?? '',
     from: address(envelope?.from), to: address(envelope?.to), replyTo: address(envelope?.replyTo),
     date: new Date(envelope?.date ?? message.internalDate ?? 0).getTime() || 0,
     flags: [...(message.flags ?? [])],

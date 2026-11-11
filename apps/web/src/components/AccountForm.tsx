@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { accountSchema, accountUpdateSchema, detectProvider, providerPresets, type AccountInput, type AccountSettings, type AccountUpdate, type AutoConfig } from '@mail/shared';
 import { api, json } from '../api';
@@ -34,6 +34,7 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
   const [clientSource, setClientSource] = useState(settings?.oauth ? 'saved' : 'automatic');
   const [authorization, setAuthorization] = useState<OAuthStarted | null>(null);
   const [authorizing, setAuthorizing] = useState(false);
+  const settingsOnly = useRef(false);
   const detected = detectProvider(email);
   const provider = providerId === 'auto' ? detected : providerPresets.find(item => item.id === providerId);
   const preset = providerId === 'discovered' ? discovered : provider;
@@ -63,7 +64,9 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
       user: value(`${protocol}User`) || value('email'), password: String(form.get(`${protocol}Password`) || password) || (accountId ? undefined : '') });
     const account = { name: value('name') || preset?.name || value('email'), email: value('email'),
       imap: server('imap'), smtp: server('smtp'), proxy: clearProxy ? '' : value('proxy') || undefined, sentCopy: value('sentCopy') };
-    if (useOAuth && oauthProvider && (event.nativeEvent as SubmitEvent).submitter?.getAttribute('name') !== 'saveSettings') {
+    const onlySave = settingsOnly.current;
+    settingsOnly.current = false;
+    if (useOAuth && oauthProvider && !onlySave) {
       const source = clientSource === 'automatic' ? clients.data?.[oauthProvider].custom ? 'global' : 'preset' : clientSource;
       const parsed = oauthStartSchema.safeParse({ account, accountId, provider: oauthProvider,
         client: { source, ...(source === 'custom' ? { clientId: value('oauthClientId'), clientSecret: String(form.get('oauthClientSecret') ?? '') || undefined } : {}) } });
@@ -75,6 +78,11 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
     setError(''); save.mutate(parsed.data);
   }
   const presetKey = `${providerId}:${preset?.name ?? ''}:${providerId === 'discovered' ? discoveryVersion : 0}`;
+  const proxyFields = <>
+    <label>代理（选填）<input name="proxy" disabled={clearProxy} placeholder={settings?.proxyDisplay ? `留空保留现有代理 ${settings.proxyDisplay}` : 'socks5://127.0.0.1:1080 或 http://127.0.0.1:7890'} />
+      {oauthProvider && <span className="hint">主机无法直连 {oauthProvider === 'google' ? 'Google' : 'Microsoft'} 时填写，收发信和换取令牌都会走它。授权页由浏览器打开，浏览器也要能访问。</span>}</label>
+    {settings?.proxyDisplay && <label className="checkbox-label"><input type="checkbox" checked={clearProxy} onChange={event => setClearProxy(event.target.checked)} />移除现有代理</label>}
+  </>;
   return <Modal title={accountId ? '邮箱设置' : '连接邮箱'} description={accountId ? '更换收信服务器或登录名会重新同步本地邮件索引，草稿保留。' : '通过 IMAP 和 SMTP 连接，邮件保存在运行信屿的主机上。'} onClose={() => { if (!save.isPending && !start.isPending && !authorizing) onClose(); }} wide>
     {authorization && <OAuthAuthorization session={authorization} onSaved={saved} onBusy={setAuthorizing} onCancel={() => { setAuthorization(null); start.reset(); }} />}
     <form onSubmit={submit} className="account-form" noValidate style={authorization ? { display: 'none' } : undefined}><fieldset className="form-fields" disabled={save.isPending || start.isPending}>
@@ -89,6 +97,8 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
       {oauthProvider === 'google' && !settings?.oauth && <label>登录方式<select value={useOAuth ? 'oauth' : 'password'} onChange={event => setAuthMode(event.target.value)}><option value="oauth">Google OAuth 登录</option><option value="password">应用专用密码</option></select></label>}
       {useOAuth && oauthProvider ? <OAuthClientFields provider={oauthProvider} source={clientSource} onSource={setClientSource} saved={settings?.oauth?.client} clients={clients.data} />
         : !blocked && <label>{providerHints?.passwordLabel ?? '密码或授权码'}{accountId && '（留空不改）'}<input name="password" type="password" autoComplete="new-password" required={!accountId} placeholder={accountId ? '填写后同时更新收发信密码，发信可在下方另填' : ''} /></label>}
+      {/* Google and Microsoft are often only reachable through a proxy, so for them the field is not tucked away below. */}
+      {oauthProvider && proxyFields}
       <details className="advanced" open={serversOpen ?? !preset}>
         <summary onClick={event => { event.preventDefault(); setServersOpen(!(serversOpen ?? !preset)); }}>服务器与高级设置{preset && <span>已按 {preset.name} 填好</span>}</summary>
         <div className="form-grid" key={presetKey}>{(['imap', 'smtp'] as const).map(protocol => {
@@ -102,13 +112,13 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
           </fieldset>;
         })}</div>
         <label>已发送的邮件<select name="sentCopy" key={presetKey} defaultValue={preset?.sentCopy ?? settings?.sentCopy ?? 'append'}><option value="append">由本应用存入“已发送”（多数邮箱）</option><option value="server">服务商会自动保存（Gmail、Outlook）</option></select></label>
-        <label>代理（选填）<input name="proxy" disabled={clearProxy} placeholder={settings?.proxyDisplay ? `留空保留现有代理 ${settings.proxyDisplay}` : 'socks5://127.0.0.1:1080 或 http://127.0.0.1:7890'} /></label>
-        {settings?.proxyDisplay && <label className="checkbox-label"><input type="checkbox" checked={clearProxy} onChange={event => setClearProxy(event.target.checked)} />移除现有代理</label>}
+        {!oauthProvider && proxyFields}
       </details>
     </fieldset>
     {(error || save.error || discover.error || start.error || clients.error) && <p className="error" role="alert">{error || save.error?.message || discover.error?.message || start.error?.message || clients.error?.message}</p>}
     <div className="form-footer"><span className="hint">验证收发信后保存，凭据加密存储。</span>
-      {settings?.oauth && <Button type="submit" name="saveSettings" disabled={save.isPending || start.isPending}>保存设置</Button>}
+      {/* Not a submit button: Enter in a field would pick the first one, and saving would drop a client ID typed for re-authorisation. */}
+      {settings?.oauth && <Button type="button" disabled={save.isPending || start.isPending} onClick={event => { settingsOnly.current = true; event.currentTarget.form?.requestSubmit(); }}>保存设置</Button>}
       <Button type="submit" variant="primary" disabled={save.isPending || start.isPending || blocked || (useOAuth && !clients.data)}>{blocked ? '暂不支持' : save.isPending || start.isPending ? '正在处理…' : useOAuth ? settings?.oauth ? '重新授权' : '开始 OAuth 授权' : accountId ? '保存设置' : '连接'}</Button></div>
     </form>
   </Modal>;

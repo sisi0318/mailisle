@@ -1,16 +1,22 @@
 import { EventEmitter } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { Hono } from 'hono';
+import { isIP } from 'node:net';
+import { Hono, type Context } from 'hono';
+import { HTTPException } from 'hono/http-exception';
+import { getConnInfo } from '@hono/node-server/conninfo';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { streamSSE } from 'hono/streaming';
 import { bodyLimit } from 'hono/body-limit';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { accountSchema, accountUpdateSchema, composeSchema, discoverySchema, draftSchema, flagsSchema, listSchema, loginSchema, MAX_ATTACHMENT_BYTES, moveSchema, sendSchema, type SyncEvent } from '@mail/shared';
-import { discoverAccount, publicError, verifyPassword, type MailService } from '@mail/core';
+import { discoverAccount, errorStatus, publicError, UserError, verifyPassword, type MailService } from '@mail/core';
 import { oauthStartSchema, oauthProviderSchema, oauthClientUpdateSchema, oauthCallbackSchema } from '@mail/shared';
 import { createAccessPolicy } from './access';
 import { SESSION_SECONDS, WebSessions } from './sessions';
+import { clientKey, LoginLimiter } from './login-limit';
+
+const PUBLIC_PATHS = ['/api/session', '/api/login'];
 
 type Options = { service: MailService; passwordHash: string; port: number; webRoot?: string; docsRoot?: string; dev?: boolean; publicUrl?: string; https?: boolean };
 
@@ -19,8 +25,7 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
   const sessions = new WebSessions(service.store);
   const sessionEvents = new EventEmitter();
   const access = createAccessPolicy({ port, publicUrl, https, dev });
-  let loginAttempts = 0;
-  let loginWindow = Date.now();
+  const logins = new LoginLimiter();
   const authenticated = (token: string | undefined) => sessions.authenticated(token);
 
   app.use('*', async (c, next) => {
@@ -28,30 +33,37 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     if (!expectedOrigin) return c.json({ error: '不允许的 Host；使用域名访问时请设置 MAIL_PUBLIC_URL' }, 403);
     const origin = c.req.header('origin');
     if (origin && !access.acceptsOrigin(expectedOrigin, origin)) return c.json({ error: '不允许的请求来源' }, 403);
-    if (c.req.path.startsWith('/api/') && c.req.header('sec-fetch-site') === 'cross-site') return c.json({ error: '不允许跨站请求' }, 403);
+    // Another port or a sibling subdomain is the same site to the browser and would carry the session cookie.
+    if (c.req.path.startsWith('/api/') && ['cross-site', 'same-site'].includes(c.req.header('sec-fetch-site') ?? '')) return c.json({ error: '不允许跨站请求' }, 403);
     if (!['GET', 'HEAD'].includes(c.req.method) && !origin) return c.json({ error: '请求缺少 Origin' }, 403);
     c.set('secureCookie', expectedOrigin.startsWith('https:'));
     c.header('X-Content-Type-Options', 'nosniff');
     c.header('Referrer-Policy', 'no-referrer');
     c.header('X-Frame-Options', 'DENY');
-    c.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    c.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
     await next();
   });
-  app.use('/api/*', bodyLimit({ maxSize: MAX_ATTACHMENT_BYTES + 2 * 1024 * 1024, onError: c => c.json({ error: '请求内容过大' }, 413) }));
   app.use('/api/*', async (c, next) => {
     c.header('Cache-Control', 'no-store');
-    if (['/api/session', '/api/login'].includes(c.req.path)) return next();
+    if (PUBLIC_PATHS.includes(c.req.path)) return next();
     if (!authenticated(getCookie(c, 'mail_session'))) return c.json({ error: '请先登录' }, 401);
     await next();
   });
+  // The limit buffers a chunked body before it can measure it, so it runs after the login check and
+  // leaves only a few kilobytes for anyone who has not logged in.
+  const tooLarge = (c: Context) => c.json({ error: '请求内容过大' }, 413);
+  const publicBody = bodyLimit({ maxSize: 16 * 1024, onError: tooLarge });
+  const privateBody = bodyLimit({ maxSize: MAX_ATTACHMENT_BYTES + 2 * 1024 * 1024, onError: tooLarge });
+  app.use('/api/*', (c, next) => (PUBLIC_PATHS.includes(c.req.path) ? publicBody : privateBody)(c, next));
   app.get('/api/session', c => c.json({ authenticated: authenticated(getCookie(c, 'mail_session')) }));
   app.post('/api/login', async c => {
-    const parsed = loginSchema.safeParse(await c.req.json());
+    // Counted before the body is read, so malformed requests use up attempts as well.
+    const client = remoteClient(c);
+    if (!logins.allow(client)) return c.json({ error: '登录尝试过于频繁，请一分钟后重试' }, 429);
+    const parsed = loginSchema.safeParse(await readJson(c));
     if (!parsed.success) return c.json({ error: parsed.error.issues[0].message }, 400);
-    if (Date.now() - loginWindow > 60_000) { loginWindow = Date.now(); loginAttempts = 0; }
-    if (++loginAttempts > 10) return c.json({ error: '登录尝试过于频繁，请一分钟后重试' }, 429);
     if (!await verifyPassword(parsed.data.password, passwordHash)) return c.json({ error: '密码不正确' }, 401);
-    loginAttempts = 0;
+    logins.reset(client);
     const token = sessions.create();
     setCookie(c, 'mail_session', token, { httpOnly: true, sameSite: 'Strict', secure: c.get('secureCookie'), path: '/', maxAge: SESSION_SECONDS });
     return c.json({ authenticated: true });
@@ -68,7 +80,7 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
   app.get('/api/oauth/clients', c => c.json(service.oauth.settings()));
   app.put('/api/oauth/clients/:provider', async c => {
     const provider = oauthProviderSchema.safeParse(c.req.param('provider'));
-    const input = oauthClientUpdateSchema.safeParse(await c.req.json());
+    const input = oauthClientUpdateSchema.safeParse(await readJson(c));
     if (!provider.success || !input.success) return c.json({ error: 'OAuth 客户端设置不正确' }, 400);
     service.oauth.setClient(provider.data, input.data);
     return c.json(service.oauth.settings());
@@ -79,13 +91,13 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     return c.text(await readFile(join(docsRoot, `oauth-${provider.data}.md`), 'utf8'));
   });
   app.post('/api/oauth/start', async c => {
-    const parsed = oauthStartSchema.safeParse(await c.req.json());
+    const parsed = oauthStartSchema.safeParse(await readJson(c));
     if (!parsed.success) return c.json({ error: parsed.error.issues[0].message }, 400);
     return c.json(await service.oauthFlow.start(getCookie(c, 'mail_session')!, parsed.data), 201);
   });
   app.get('/api/oauth/sessions/:id', c => c.json(service.oauthFlow.status(c.req.param('id'), getCookie(c, 'mail_session')!)));
   app.post('/api/oauth/sessions/:id/callback', async c => {
-    const parsed = oauthCallbackSchema.safeParse(await c.req.json());
+    const parsed = oauthCallbackSchema.safeParse(await readJson(c));
     if (!parsed.success) return c.json({ error: '请粘贴完整回调网址' }, 400);
     return c.json(await service.oauthFlow.paste(c.req.param('id'), getCookie(c, 'mail_session')!, parsed.data.url));
   });
@@ -101,7 +113,7 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
   });
   app.put('/api/accounts/:id', async c => {
     if (!service.store.account(c.req.param('id'))) return c.json({ error: '邮箱不存在' }, 404);
-    const parsed = accountUpdateSchema.safeParse(await c.req.json());
+    const parsed = accountUpdateSchema.safeParse(await readJson(c));
     if (!parsed.success) return c.json({ error: parsed.error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('；') }, 400);
     const oauth = service.accountSettings(c.req.param('id')).oauth;
     if (oauth) {
@@ -112,7 +124,7 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     return c.json({ ok: true });
   });
   app.post('/api/autoconfig', async c => {
-    const parsed = discoverySchema.safeParse(await c.req.json());
+    const parsed = discoverySchema.safeParse(await readJson(c));
     if (!parsed.success) return c.json({ error: '请输入有效邮箱地址' }, 400);
     return c.json({ config: await discoverAccount(parsed.data.email) });
   });
@@ -136,7 +148,7 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     const [file] = await service.uploads.attachments([c.req.param('id')]);
     c.header('Content-Type', 'application/octet-stream');
     c.header('Content-Disposition', `attachment; filename="attachment"; filename*=UTF-8''${encodeURIComponent(file.filename).replace(/'/g, '%27')}`);
-    return c.body(new Uint8Array(file.content));
+    return c.body(view(file.content));
   });
   app.get('/api/drafts', c => c.json(service.store.drafts(c.req.query('accountId'))));
   app.get('/api/drafts/:id', c => {
@@ -144,13 +156,13 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     return c.json(service.getDraft(c.req.param('id')));
   });
   app.post('/api/drafts', async c => {
-    const parsed = draftSchema.safeParse(await c.req.json());
+    const parsed = draftSchema.safeParse(await readJson(c));
     if (!parsed.success) return c.json({ error: '草稿内容不正确，请检查长度和附件' }, 400);
     return c.json(await service.saveDraft(undefined, parsed.data), 201);
   });
   app.put('/api/drafts/:id', async c => {
     if (!service.store.draft(c.req.param('id'))) return c.json({ error: '草稿不存在' }, 404);
-    const parsed = draftSchema.safeParse(await c.req.json());
+    const parsed = draftSchema.safeParse(await readJson(c));
     if (!parsed.success) return c.json({ error: '草稿内容不正确，请检查长度和附件' }, 400);
     return c.json(await service.saveDraft(c.req.param('id'), parsed.data));
   });
@@ -160,7 +172,7 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     return c.json({ ok: true });
   });
   app.post('/api/accounts', async c => {
-    const parsed = accountSchema.safeParse(await c.req.json());
+    const parsed = accountSchema.safeParse(await readJson(c));
     if (!parsed.success) return c.json({ error: parsed.error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('；') }, 400);
     return c.json({ id: await service.addAccount(parsed.data) }, 201);
   });
@@ -187,33 +199,30 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
   app.get('/api/messages/:id/body', async c => c.json(await service.body(c.req.param('id'))));
   app.get('/api/messages/:id/thread', c => c.json(service.store.thread(service.store.message(c.req.param('id'))!.threadId)));
   app.post('/api/messages/:id/draft', async c => {
-    const parsed = composeSchema.safeParse(await c.req.json());
+    const parsed = composeSchema.safeParse(await readJson(c));
     if (!parsed.success) return c.json({ error: '写信操作不正确' }, 400);
     return c.json(await service.compose(c.req.param('id'), parsed.data.mode, parsed.data.includeAttachments, parsed.data.timeZone), 201);
   });
   app.patch('/api/messages/:id/flags', async c => {
-    const parsed = flagsSchema.safeParse(await c.req.json());
+    const parsed = flagsSchema.safeParse(await readJson(c));
     if (!parsed.success) return c.json({ error: '标记参数不正确' }, 400);
     await service.flags(c.req.param('id'), parsed.data);
     return c.json({ ok: true });
   });
   app.post('/api/messages/:id/move', async c => {
-    const parsed = moveSchema.safeParse(await c.req.json());
+    const parsed = moveSchema.safeParse(await readJson(c));
     if (!parsed.success) return c.json({ error: '文件夹参数不正确' }, 400);
     await service.move(c.req.param('id'), parsed.data.folderId);
     return c.json({ ok: true });
   });
   app.get('/api/messages/:id/attachments/:attachmentId', async c => {
-    const body = await service.body(c.req.param('id'));
-    const attachment = body.attachments.find(item => item.id === c.req.param('attachmentId'));
-    if (!attachment) return c.json({ error: '附件不存在' }, 404);
-    const content = await service.cache.attachment(c.req.param('id'), attachment.id);
+    const attachment = await service.attachment(c.req.param('id'), c.req.param('attachmentId'));
     c.header('Content-Disposition', `attachment; filename="attachment"; filename*=UTF-8''${encodeURIComponent(attachment.filename).replace(/'/g, '%27')}`);
     c.header('Content-Type', 'application/octet-stream');
-    return c.body(new Uint8Array(content));
+    return c.body(view(attachment.content));
   });
   app.post('/api/send', async c => {
-    const parsed = sendSchema.safeParse(await c.req.json());
+    const parsed = sendSchema.safeParse(await readJson(c));
     if (!parsed.success) return c.json({ error: parsed.error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('；') }, 400);
     return c.json(await service.send(parsed.data));
   });
@@ -242,8 +251,38 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     app.get('*', serveStatic({ path: `${webRoot}/index.html` }));
   }
   app.onError((error, c) => {
-    if (error instanceof SyntaxError) return c.json({ error: '请求不是有效的 JSON' }, 400);
-    return c.json({ error: publicError(error) }, 502);
+    if (error instanceof HTTPException) return error.getResponse();
+    const status = errorStatus(error);
+    if (status >= 500) console.error(`[api] ${c.req.method} ${c.req.path} ${status}`, describe(error));
+    return c.json({ error: publicError(error) }, status);
   });
   return app;
+}
+
+/** Reads a JSON request body. A SyntaxError from anywhere else is a fault in the server, not in the request. */
+async function readJson(c: Context): Promise<unknown> {
+  try { return await c.req.json(); }
+  catch { throw new UserError('请求不是有效的 JSON'); }
+}
+
+/** The same bytes without copying them; an attachment can be tens of megabytes. */
+function view(content: Buffer) {
+  return new Uint8Array(content.buffer, content.byteOffset, content.byteLength) as Uint8Array<ArrayBuffer>;
+}
+
+/** The login counter a request belongs to. */
+function remoteClient(c: Context) {
+  let peer: string | undefined;
+  try { peer = getConnInfo(c).remote.address; } catch { /* Requests made in tests have no socket. */ }
+  // Only a reverse proxy on this machine may speak for the client, and the entry it appended is the last one.
+  const forwarded = peer && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(peer) ? c.req.header('x-forwarded-for')?.split(',').at(-1)?.trim() : undefined;
+  return clientKey(forwarded && isIP(forwarded) ? forwarded : peer);
+}
+
+/** What goes to the server log. Errors raised by a library can quote a mail server's answer, addresses included, so only their type and origin are kept. */
+function describe(error: unknown) {
+  if (!(error instanceof Error)) return typeof error;
+  if ([TypeError, RangeError, ReferenceError, SyntaxError].some(type => error instanceof type)) return error.stack ?? error.message;
+  const code = (error as { code?: unknown }).code;
+  return `${error.name}${typeof code === 'string' ? ` ${code}` : ''}\n${(error.stack ?? '').split('\n').filter(line => line.trimStart().startsWith('at ')).slice(0, 5).join('\n')}`;
 }

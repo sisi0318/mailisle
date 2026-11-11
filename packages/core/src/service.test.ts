@@ -249,3 +249,10 @@ function serverAdapter() {
     watchInbox: vi.fn(async (onChange: () => void) => { notify = onChange; return stopWatch; }), stopWatch,
   };
 }
+
+it('never sends a saved password to a different server', async () => {
+  const settings = service.accountSettings(accountId);
+  const moved = accountUpdateSchema.parse({ ...settings, imap: { ...settings.imap, host: 'localhost' } });
+  await expect(service.updateAccount(accountId, moved)).rejects.toThrow('重新填写密码');
+  expect(factory).not.toHaveBeenCalledWith(expect.objectContaining({ imap: expect.objectContaining({ host: 'localhost' }) }), expect.anything());
+});

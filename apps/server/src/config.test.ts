@@ -21,3 +21,9 @@ it('keeps an existing example-password instance accessible only on loopback for 
   expect(readConfig({ MAIL_MASTER_PASSWORD: 'replace-with-a-long-secret', MAIL_HOST: '127.0.0.1' }, []).host).toBe('127.0.0.1');
   expect(() => readConfig({ MAIL_MASTER_PASSWORD: 'replace-with-a-long-secret', MAIL_HOST: '192.168.1.20' }, [])).toThrow('示例密码');
 });
+it('treats a loopback bind behind a public address as remote access', () => {
+  const proxied = { MAIL_MASTER_PASSWORD: 'replace-with-a-long-secret', MAIL_HOST: '127.0.0.1', MAIL_PUBLIC_URL: 'https://mail.example.com' };
+  expect(() => readConfig(proxied, [])).toThrow('示例密码');
+  expect(readConfig({ ...proxied, MAIL_PUBLIC_URL: 'http://localhost:3000' }, []).host).toBe('127.0.0.1');
+  expect(readConfig({ MAIL_MASTER_PASSWORD: password, MAIL_DATA_DIR: ' ' }, []).dataDir).toMatch(/\.data$/);
+});

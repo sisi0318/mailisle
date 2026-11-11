@@ -17,7 +17,7 @@ export type ProviderPreset = {
 // Parameters checked against provider documentation / Thunderbird ISPDB on 2026-11-10.
 export const providerPresets: ProviderPreset[] = [
   {
-    id: 'qq', name: 'QQ 邮箱', domains: ['qq.com'],
+    id: 'qq', name: 'QQ 邮箱', domains: ['qq.com', 'vip.qq.com', 'foxmail.com'],
     imap: { host: 'imap.qq.com', port: 993, security: 'tls' },
     smtp: { host: 'smtp.qq.com', port: 465, security: 'tls' },
     sentCopy: 'append', passwordLabel: '客户端授权码',

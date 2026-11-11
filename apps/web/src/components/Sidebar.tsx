@@ -51,7 +51,7 @@ export function Sidebar({ accounts, folders, filter, syncing, connected, onNavig
       {accounts.map((account, index) => {
         const open = filter.accountId === account.id;
         return <div className="account-group" key={account.id}>
-          <button className={`account-button ${open && !filter.folderId ? 'active' : ''}`} aria-expanded={open} onClick={() => onNavigate({ view: 'inbox', accountId: account.id })}>
+          <button className={`account-button ${open && !filter.folderId && filter.view !== 'drafts' ? 'active' : ''}`} aria-expanded={open} onClick={() => onNavigate({ view: 'inbox', accountId: account.id })}>
             <span className="account-mark" style={{ background: accountColor(index) }} />
             <span className="account-text"><span>{account.name}</span><small>{account.email}</small></span>
             {syncing.has(account.id) && <RefreshCw className="spin" size={13} aria-label="正在同步" />}
@@ -65,7 +65,7 @@ export function Sidebar({ accounts, folders, filter, syncing, connected, onNavig
                 <Icon size={14} /><span>{label}</span>{!!counts?.folders[folder.id] && <small className="unread-count" aria-label={`${counts.folders[folder.id]} 封未读`}>{counts.folders[folder.id]}</small>}
               </button>;
             })}
-            <button onClick={() => onNavigate({ view: 'drafts', accountId: account.id })}><FileText size={14} /><span>本地草稿</span></button>
+            <button className={filter.view === 'drafts' ? 'active' : ''} onClick={() => onNavigate({ view: 'drafts', accountId: account.id })}><FileText size={14} /><span>本地草稿</span></button>
             <button onClick={() => onEditAccount(account)}><Settings size={14} /><span>邮箱设置</span></button>
             <button className="remove-account" onClick={() => onRemoveAccount(account)}>移除此邮箱…</button>
           </div>}

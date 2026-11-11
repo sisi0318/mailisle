@@ -34,10 +34,16 @@ export class UploadStore {
   }
   async removeUnused(ids: string[]) {
     for (const id of new Set(ids)) {
-      if (!this.store.upload(id) || this.store.uploadInUse(id)) continue;
+      const upload = this.store.upload(id);
+      if (!upload || this.store.uploadInUse(id)) continue;
       this.store.removeUpload(id);
       try { await unlink(join(this.directory, `${id}.bin`)); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        // The row is the only record of the file. It is put back so the hourly cleanup can try again.
+        this.store.addUpload(upload);
+        throw error;
+      }
     }
   }
   async cleanup() { await this.removeUnused(this.store.unusedUploads(Date.now() - 86_400_000).map(file => file.id)); }

@@ -3,10 +3,10 @@ export { providerPresets, detectProvider } from './providers';
 export type { ProviderPreset } from './providers';
 
 export const serverSchema = z.object({
-  host: z.string().trim().min(1).max(253),
+  host: z.string().trim().min(1).max(253).regex(/^[^\s\x00-\x1f\x7f]+$/, '服务器地址不能包含空格或控制字符'),
   port: z.number().int().min(1).max(65535),
   security: z.enum(['tls', 'starttls', 'plain']).default('tls'),
-  user: z.string().trim().min(1).max(320),
+  user: z.string().trim().min(1).max(320).regex(/^[^\x00-\x1f\x7f]+$/, '登录名不能包含控制字符'),
   password: z.string().min(1).max(4096),
 });
 

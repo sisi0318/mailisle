@@ -228,6 +228,8 @@ export class MailStore {
     const rows = this.db.select(messageColumns).from(schema.messages).where(where).orderBy(sql`date DESC, id DESC`).limit(input.limit).offset(input.offset).all();
     return { messages: rows.map(row => this.toMessage(row)), total, nextOffset: input.offset + rows.length < total ? input.offset + rows.length : null };
   }
+  hasMessage(id: string) { return !!this.sqlite.prepare('SELECT 1 FROM messages WHERE id = ?').get(id); }
+  messageIds(accountId: string) { return this.db.select({ id: schema.messages.id }).from(schema.messages).where(eq(schema.messages.accountId, accountId)).all().map(row => row.id); }
   message(id: string): Message | undefined {
     const row = this.db.select(messageColumns).from(schema.messages).where(eq(schema.messages.id, id)).get();
     return row && this.toMessage(row);
@@ -269,7 +271,8 @@ export class MailStore {
   }
   private resolveThread(accountId: string, message: MailMetadata, current?: string): string {
     if (message.providerThreadId) return `${accountId}:provider:${message.providerThreadId}`;
-    const refs = [...new Set([message.messageId, ...message.references].filter(Boolean))];
+    // One statement binds every reference, so a crafted header with tens of thousands of them must stay under SQLite's variable limit.
+    const refs = [...new Set([message.messageId, ...message.references.slice(-200)].filter(Boolean))];
     if (!refs.length) return current ?? randomUUID();
     const related = this.db.select({ threadId: schema.threadKeys.threadId }).from(schema.threadKeys).where(and(
       eq(schema.threadKeys.accountId, accountId), inArray(schema.threadKeys.reference, refs),

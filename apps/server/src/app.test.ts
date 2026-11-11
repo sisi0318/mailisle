@@ -58,6 +58,18 @@ describe('HTTP authentication and local data', () => {
     expect((await request('/login', 'POST', { password: 'incorrect-password' })).status).toBe(429);
   });
 
+  it('reads nothing large from a client that has not logged in', async () => {
+    const big = 'x'.repeat(64 * 1024);
+    expect((await request('/login', 'POST', { password: big })).status).toBe(413);
+    expect((await request('/drafts', 'POST', { text: big })).status).toBe(401);
+    const chunked = await app.request('http://127.0.0.1:3000/api/login', { method: 'POST', duplex: 'half',
+      headers: { origin: 'http://127.0.0.1:3000', 'content-type': 'application/json', 'transfer-encoding': 'chunked' },
+      body: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(JSON.stringify({ password: big }))); controller.close(); } }) } as RequestInit);
+    expect(chunked.status).toBe(413);
+    expect((await request('/accounts', 'GET', undefined, undefined, { 'sec-fetch-site': 'same-site' })).status).toBe(403);
+    expect((await request('/login', 'POST', undefined, undefined, { 'content-type': 'application/json' })).status).toBe(400);
+  });
+
   it('returns cached CID data through the authenticated body API while attachments stay downloads', async () => {
     const { inbox } = seedAccount(store);
     store.applyBatch(inbox, [record()]);

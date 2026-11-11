@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import MailComposer from 'nodemailer/lib/mail-composer/index.js';
 import { BodyCache } from './cache';
@@ -48,4 +48,31 @@ it('keeps CID metadata on disk and supplies only raster images as data URLs', as
   expect(stored.cacheVersion).toBe(2);
   expect(stored).not.toHaveProperty('inlineImages');
   expect(await cache.attachment('cid-message', '0')).toEqual(png);
+});
+
+it('removes cached mail whose message is gone and leaves everything else in the directory alone', async () => {
+  const cache = new BodyCache(directory);
+  const kept = '11111111-1111-4111-8111-111111111111';
+  const gone = '22222222-2222-4222-8222-222222222222';
+  const source = Buffer.from('Content-Type: text/plain\r\n\r\nhello');
+  await cache.save(kept, source); await cache.save(gone, source);
+  await mkdir(join(directory, 'uploads')); await writeFile(join(directory, 'uploads', 'file.bin'), 'x');
+  await writeFile(join(directory, '33333333-3333-4333-8333-333333333333'), 'a file, not a cache entry');
+  expect(await cache.sweep(id => id === kept)).toBe(1);
+  expect(await cache.read(kept)).not.toBeNull();
+  expect(await cache.read(gone)).toBeNull();
+  expect(await readFile(join(directory, 'uploads', 'file.bin'), 'utf8')).toBe('x');
+  expect(await readFile(join(directory, '33333333-3333-4333-8333-333333333333'), 'utf8')).toContain('not a cache entry');
+  await cache.remove([kept, '../outside', 'uploads/..']);
+  expect(await cache.read(kept)).toBeNull();
+  expect(await readFile(join(directory, 'uploads', 'file.bin'), 'utf8')).toBe('x');
+  expect(await new BodyCache(join(directory, 'missing')).sweep(() => false)).toBe(0);
+});
+
+it('refuses IDs that would leave the cache directory and re-fetches a damaged entry', async () => {
+  const cache = new BodyCache(directory);
+  await expect(cache.read('../outside')).rejects.toThrow('邮件不存在');
+  await expect(cache.attachment('message-1', '../../secret')).rejects.toThrow('附件不存在');
+  await mkdir(join(directory, 'damaged')); await writeFile(join(directory, 'damaged', 'body.json'), '{"text":');
+  expect(await cache.read('damaged')).toBeNull();
 });

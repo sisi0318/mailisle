@@ -1,6 +1,7 @@
 export * from './adapter';
 export * from './cache';
 export * from './crypto';
+export * from './errors';
 export * from './imap';
 export * from './service';
 export * from './uploads';

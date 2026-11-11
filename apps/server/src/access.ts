@@ -7,9 +7,10 @@ export function createAccessPolicy({ port, publicUrl, https = false, dev = false
   const developmentOrigins = new Set(dev ? ['http://127.0.0.1:5173', 'http://localhost:5173'] : []);
   return {
     originForHost(host: string) {
+      // Read with the published scheme, so a proxy that forwards "name:443" still matches https://name.
+      if (published && parseHost(host, published.protocol === 'https:')?.host === published.host) return published.origin;
       const address = parseHost(host, https);
       if (!address) return undefined;
-      if (published?.host === address.host) return published.origin;
       const hostname = address.hostname.replace(/^\[|\]$/g, '');
       // IP literals work through LAN, VPN and Docker port mappings without trusting arbitrary DNS names.
       return hostname === 'localhost' || isIP(hostname) ? address.origin : undefined;

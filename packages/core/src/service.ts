@@ -11,6 +11,7 @@ import { UploadStore } from './uploads';
 import { composeDraft } from './compose';
 import { OAuthManager, type AccountConfig } from './oauth';
 import { OAuthFlow } from './oauth-flow';
+import { publicError, UserError } from './errors';
 
 export class MailService {
   readonly events = new EventEmitter();
@@ -24,7 +25,7 @@ export class MailService {
   private bodyLoads = new Map<string, { accountId: string; promise: Promise<MessageBody> }>();
   private changingAccounts = new Set<string>();
   private operations = new Map<string, Set<Promise<unknown>>>();
-  private nextUploadCleanup = 0;
+  private nextCleanup = 0;
   readonly oauth: OAuthManager;
   readonly oauthFlow: OAuthFlow;
 
@@ -45,9 +46,11 @@ export class MailService {
     this.prefetcher.start();
     const tick = () => {
       for (const account of this.store.accounts()) void this.sync(account.id);
-      if (this.uploads && Date.now() >= this.nextUploadCleanup) {
-        this.nextUploadCleanup = Date.now() + 3_600_000;
-        void this.uploads.cleanup().catch(error => console.warn('临时附件清理失败', publicError(error)));
+      if (Date.now() >= this.nextCleanup) {
+        this.nextCleanup = Date.now() + 3_600_000;
+        void this.uploads?.cleanup().catch(error => console.warn('临时附件清理失败', publicError(error)));
+        // Mail removed on the server leaves its cached body behind, and nothing else would ever delete it.
+        void this.cache.sweep(id => this.store.hasMessage(id)).catch(error => console.warn('邮件缓存清理失败', publicError(error)));
       }
     };
     tick();
@@ -82,9 +85,13 @@ export class MailService {
   async deleteAccount(id: string) {
     const attachments = this.store.drafts(id).flatMap(draft => this.store.draft(draft.id)!.attachmentIds);
     this.beginAccountChange(id);
-    try { await this.pauseAccount(id); this.store.deleteAccount(id); }
+    let cached: string[] = [];
+    try { await this.pauseAccount(id); cached = this.store.messageIds(id); this.store.deleteAccount(id); }
     finally { this.changingAccounts.delete(id); }
     await this.cleanupUploads(attachments);
+    await this.cleanupBodies(cached);
+    // A sync that was cut short never reports its own end.
+    this.emit({ type: 'sync', accountId: id, state: 'idle' });
     this.emit({ type: 'change', accountId: id });
   }
   accountSettings(id: string): AccountSettings {
@@ -98,7 +105,12 @@ export class MailService {
   }
   async updateAccount(id: string, input: AccountUpdate) {
     const old = this.accountConfig(id);
-    if (old.oauth && (input.imap.password || input.smtp.password)) throw new Error('OAuth 邮箱不使用密码，请点击重新授权');
+    if (old.oauth && (input.imap.password || input.smtp.password)) throw new UserError('OAuth 邮箱不使用密码，请点击重新授权');
+    // A stored password only ever goes to the server it was entered for.
+    for (const protocol of ['imap', 'smtp'] as const) {
+      if (!old.oauth && !input[protocol].password && old[protocol].host.trim().toLowerCase() !== input[protocol].host.trim().toLowerCase())
+        throw new UserError(`更换${protocol === 'imap' ? '收信' : '发信'}服务器后需要重新填写密码，已保存的密码不会发往新的服务器`);
+    }
     const config: AccountConfig = { ...input, oauth: old.oauth,
       imap: { ...input.imap, password: input.imap.password ?? old.imap.password },
       smtp: { ...input.smtp, password: input.smtp.password ?? old.smtp.password },
@@ -113,6 +125,7 @@ export class MailService {
   private async replaceAccount(id: string, config: AccountConfig, keepOAuth = false) {
     const old = this.accountConfig(id);
     let saved = false;
+    let cached: string[] = [];
     const adapter = this.makeAdapter(config, () => saved || keepOAuth ? id : undefined);
     this.beginAccountChange(id);
     try {
@@ -120,11 +133,13 @@ export class MailService {
       await this.pauseAccount(id);
       if (keepOAuth) config.oauth = this.accountConfig(id).oauth;
       const reset = old.imap.host !== config.imap.host || old.imap.port !== config.imap.port || old.imap.user !== config.imap.user;
+      if (reset) cached = this.store.messageIds(id);
       this.store.updateAccount(id, config.name, config.email, this.vault.encrypt(config), reset);
       saved = true;
       this.adapters.set(id, adapter);
     } catch (error) { await adapter.close(); throw error; }
     finally { this.changingAccounts.delete(id); void this.sync(id); }
+    await this.cleanupBodies(cached);
     this.emit({ type: 'change', accountId: id });
   }
   sync(id: string): Promise<void> {
@@ -175,18 +190,15 @@ export class MailService {
     const attachments = input.attachmentIds.length ? await this.requireUploads().attachments(input.attachmentIds) : [];
     const sent = this.store.folders(input.accountId).find(folder => folder.role === 'sent');
     const result = await this.withAdapter(input.accountId, adapter => adapter.send(input, sent?.path, attachments));
-    try {
-      if (input.draftId) await this.deleteDraft(input.draftId);
-      await this.cleanupUploads(input.attachmentIds);
-    } catch {
-      result.warning = [result.warning, '邮件已发送，但清理草稿失败，请勿重复发送。'].filter(Boolean).join(' ');
-    }
+    try { if (input.draftId) await this.deleteDraft(input.draftId); }
+    catch { result.warning = [result.warning, '邮件已发送，但清理草稿失败，请勿重复发送。'].filter(Boolean).join(' '); }
+    await this.cleanupUploads(input.attachmentIds);
     void this.sync(input.accountId);
     return result;
   }
   getDraft(id: string): Draft {
     const draft = this.store.draft(id);
-    if (!draft) throw new Error('草稿不存在');
+    if (!draft) throw new UserError('草稿不存在', 404);
     return { ...draft, html: draft.html ?? undefined, inReplyTo: draft.inReplyTo ?? undefined,
       attachments: draft.attachmentIds.length ? this.requireUploads().metadata(draft.attachmentIds) : [] };
   }
@@ -209,7 +221,7 @@ export class MailService {
   }
   async compose(id: string, mode: ComposeMode, includeAttachments: boolean, timeZone = 'UTC'): Promise<Draft> {
     const message = this.requireMessage(id);
-    const body = await this.body(id);
+    const body = await this.cache.stored(id) ?? await this.body(id);
     let cc = body.cc ?? [];
     if (mode === 'reply-all' && body.cc === undefined) {
       const location = this.store.messageLocations(id)[0];
@@ -225,6 +237,14 @@ export class MailService {
       }
       return await this.saveDraft(undefined, draft);
     } catch (error) { await this.cleanupUploads(draft.attachmentIds); throw error; }
+  }
+  /** One attachment with its bytes. Reads only that file, not the inline images a full body carries. */
+  async attachment(messageId: string, attachmentId: string) {
+    this.requireMessage(messageId);
+    const body = await this.cache.stored(messageId) ?? await this.body(messageId);
+    const attachment = body.attachments.find(item => item.id === attachmentId);
+    if (!attachment) throw new UserError('附件不存在', 404);
+    return { ...attachment, content: await this.cache.attachment(messageId, attachmentId) };
   }
   private async loadBody(id: string, notifyReader = false): Promise<MessageBody> {
     const existing = this.bodyLoads.get(id);
@@ -291,10 +311,10 @@ export class MailService {
     } while (!this.stopped && !this.changingAccounts.has(id) && this.pendingSync.has(id));
   }
   private async withAdapter<T>(id: string, action: (adapter: MailAdapter) => Promise<T>): Promise<T> {
-    if (this.stopped) throw new Error('邮件服务正在关闭');
-    if (this.changingAccounts.has(id)) throw new Error('邮箱配置正在更新，请稍后重试');
+    if (this.stopped) throw new UserError('邮件服务正在关闭', 503);
+    if (this.changingAccounts.has(id)) throw new UserError('邮箱配置正在更新，请稍后重试', 409);
     const account = this.store.account(id);
-    if (!account) throw new Error('账号不存在');
+    if (!account) throw new UserError('账号不存在', 404);
     let adapter = this.adapters.get(id);
     if (!adapter) {
       adapter = this.makeAdapter(this.accountConfig(id), () => id);
@@ -309,26 +329,31 @@ export class MailService {
   }
   private accountConfig(id: string) {
     const account = this.store.account(id);
-    if (!account) throw new Error('邮箱不存在');
+    if (!account) throw new UserError('邮箱不存在', 404);
     return this.vault.decrypt<AccountConfig>(account.encryptedConfig);
   }
   private makeAdapter(config: AccountConfig, accountId: () => string | undefined) {
     return this.adapterFactory(config, config.oauth ? () => this.oauth.accessToken(config, accountId()) : undefined);
   }
   private beginAccountChange(id: string) {
-    if (this.changingAccounts.has(id)) throw new Error('邮箱配置正在更新，请稍后重试');
+    if (this.changingAccounts.has(id)) throw new UserError('邮箱配置正在更新，请稍后重试', 409);
     this.changingAccounts.add(id);
   }
   private async pauseAccount(id: string) {
     this.watchers.get(id)?.(); this.watchers.delete(id);
     await this.prefetcher.cancel(id);
-    await Promise.allSettled([...(this.operations.get(id) ?? []), ...(this.running.has(id) ? [this.running.get(id)!] : [])]);
+    // Closing first ends whatever is in flight. Waiting for a large folder to finish could hold the request for minutes.
     await this.adapters.get(id)?.close();
+    await Promise.allSettled([...(this.operations.get(id) ?? []), ...(this.running.has(id) ? [this.running.get(id)!] : [])]);
     this.adapters.delete(id); this.pendingSync.delete(id);
   }
   private requireUploads() {
-    if (!this.uploads) throw new Error('附件存储未配置');
+    if (!this.uploads) throw new UserError('附件存储未配置', 503);
     return this.uploads;
+  }
+  private async cleanupBodies(ids: string[]) {
+    try { await this.cache.remove(ids); }
+    catch (error) { console.warn('邮件缓存清理失败', publicError(error)); }
   }
   private async cleanupUploads(ids: string[]) {
     try { if (ids.length) await this.requireUploads().removeUnused(ids); }
@@ -336,19 +361,8 @@ export class MailService {
   }
   private requireMessage(id: string) {
     const message = this.store.message(id);
-    if (!message) throw new Error('邮件不存在');
+    if (!message) throw new UserError('邮件不存在', 404);
     return message;
   }
   private emit(event: SyncEvent) { this.events.emit('update', event); }
-}
-
-export function publicError(error: unknown): string {
-  const details = error as { code?: string; authenticationFailed?: boolean } | undefined;
-  const code = details?.code;
-  if (error instanceof TypeError) return '客户端处理邮件时出错（TypeError），请反馈此问题';
-  if (details?.authenticationFailed || code === 'EAUTH') return '邮箱登录未通过，请检查授权码或应用专用密码，以及 IMAP/SMTP 是否开启';
-  if (code) return `邮件服务器连接失败（${code}），请检查网络、代理和账号配置`;
-  // Remote server responses can contain usernames and credentials; keep them out of the UI.
-  if (error instanceof Error && /^[\u3400-\u9fff]/.test(error.message)) return error.message;
-  return '邮件操作未完成，请稍后重试';
 }

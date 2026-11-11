@@ -28,6 +28,8 @@ export class OAuthFlow {
       const callback = () => createServer((request, response) => {
         response.setHeader('Content-Type', 'text/plain; charset=utf-8');
         response.setHeader('Cache-Control', 'no-store');
+        // One request is all this listener ever serves, so the port is released as soon as the answer is sent.
+        response.setHeader('Connection', 'close');
         response.setHeader('Referrer-Policy', 'no-referrer');
         response.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
         if (request.method !== 'GET' || request.headers.host !== new URL(session.redirectUri).host) {
@@ -42,8 +44,10 @@ export class OAuthFlow {
       const port = (ipv4.address() as AddressInfo).port;
       session.redirectUri = `http://${client.redirectHost}:${port}/`;
       if (client.redirectHost === 'localhost') {
-        const ipv6 = callback(); servers.push(ipv6);
-        await listen(ipv6, port, '::1');
+        // A browser may resolve localhost to either family. A host without IPv6, such as a default Docker network, has no ::1 to listen on.
+        const ipv6 = callback();
+        try { await listen(ipv6, port, '::1'); servers.push(ipv6); }
+        catch (error) { ipv6.close(); if (!['EADDRNOTAVAIL', 'EAFNOSUPPORT', 'EINVAL'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error; }
       }
       this.sessions.set(id, session);
       const url = new URL(this.oauth.endpoints[input.provider].authorize);

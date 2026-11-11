@@ -9,6 +9,8 @@ type Job = { adapter: MailAdapter; cancelled: boolean; rescan: boolean; done: Pr
 export class BodyPrefetcher {
   private enabled = false;
   private jobs = new Map<string, Job>();
+  // Mail whose body cannot be read is left alone after a few attempts, until the next start.
+  private failures = new Map<string, number>();
 
   constructor(private store: MailStore, private cache: BodyCache, private createAdapter: (id: string) => MailAdapter,
     private events: { change(id: string): void; error(id: string, error: unknown): void }) {}
@@ -46,16 +48,19 @@ export class BodyPrefetcher {
         try {
           for (const message of batch) {
             if (job.cancelled) return;
+            if ((this.failures.get(message.id) ?? 0) >= 3) continue;
             await job.adapter.connect();
             let cached: MessageBody | null;
             let text: string;
             try {
-              cached = await this.cache.read(message.id);
+              cached = await this.cache.stored(message.id);
               const location = this.store.messageLocations(message.id)[0];
               if (!location) continue;
               text = cached?.text ?? await job.adapter.bodyText(location.folder, location.uid);
             } catch (error) {
               if (job.cancelled) return;
+              // A network error says nothing about the message; only failures of the message itself count.
+              if (typeof (error as { code?: unknown }).code !== 'string') this.failures.set(message.id, (this.failures.get(message.id) ?? 0) + 1);
               this.events.error(id, error);
               continue;
             }

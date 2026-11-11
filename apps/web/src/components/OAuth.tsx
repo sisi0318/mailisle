@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { OAuthClientInfo, OAuthClientSettings, OAuthProgress, OAuthProvider, OAuthStarted } from '@mail/shared';
 import { api, json } from '../api';
@@ -34,9 +34,14 @@ export function OAuthAuthorization({ session, onSaved, onCancel, onBusy }: { ses
   const finish = useMutation({ mutationFn: () => api<OAuthProgress>(`/oauth/sessions/${session.id}/complete`, json('POST', {})),
     onSuccess: result => { if (result.accountId) onSaved(result.accountId); } });
   const status = progress.data.status;
+  const { mutate: complete } = finish;
+  const completed = useRef(false);
   useEffect(() => { onBusy(finish.isPending); }, [finish.isPending, onBusy]);
+  // Once the provider has granted access there is nothing left to decide, so the connection is finished
+  // without another click. The button stays for a retry if verification fails.
+  useEffect(() => { if (status === 'ready' && !completed.current) { completed.current = true; complete(); } }, [status, complete]);
   return <div className="oauth-authorization">
-    <p role="status">{status === 'ready' ? '已取得邮箱授权，点击完成连接验证收发信并保存。' : status === 'error' ? '本次授权未完成。' : '请在服务商页面登录并同意邮件权限，然后返回这里。'}</p>
+    <p role="status">{status === 'ready' || status === 'saving' ? finish.error ? '已取得邮箱授权，但验证收发信没有通过。' : '已取得邮箱授权，正在验证收发信并保存…' : status === 'error' ? '本次授权未完成。' : '请在服务商页面登录并同意邮件权限，然后返回这里。'}</p>
     {status === 'waiting' && <>
       <a className="button button-primary" href={session.authorizationUrl} target="_blank" rel="noreferrer">打开服务商授权页 ↗</a>
       <details className="advanced"><summary>浏览器在另一台设备，或无法自动回调</summary>
@@ -48,7 +53,7 @@ export function OAuthAuthorization({ session, onSaved, onCancel, onBusy }: { ses
     {(progress.error || progress.data.error || paste.error || finish.error) && <p className="error" role="alert">{progress.error?.message || progress.data.error || paste.error?.message || finish.error?.message}</p>}
     <p className="hint">本次授权有效至 {new Date(session.expiresAt).toLocaleTimeString()}。令牌加密保存在本机，不会显示在网页中。</p>
     <div className="form-footer"><Button onClick={onCancel} disabled={finish.isPending}>返回设置</Button>
-      <Button variant="primary" disabled={status !== 'ready' || finish.isPending} onClick={() => finish.mutate()}>{finish.isPending ? '正在验证收发信…' : '完成连接'}</Button></div>
+      <Button variant="primary" disabled={status !== 'ready' || finish.isPending} onClick={() => finish.mutate()}>{finish.isPending ? '正在验证收发信…' : finish.error ? '重试完成连接' : '完成连接'}</Button></div>
   </div>;
 }
 
