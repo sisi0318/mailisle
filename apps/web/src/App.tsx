@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
-import { FileText, Inbox, Mail, Menu, Plus, RefreshCw, Search, TriangleAlert, X } from 'lucide-react';
+import { FileText, Inbox, Mail, Menu, Plus, RefreshCw, Search, Send, TriangleAlert, X } from 'lucide-react';
 import type { Account, ComposeMode, Draft, DraftSummary, Folder, Message, MessagePage, SyncEvent, UnreadCounts } from '@mail/shared';
 import { api, json } from './api';
 import { accountColor, folderList } from './format';
@@ -16,6 +16,7 @@ type FlagPatch = { seen?: boolean; starred?: boolean };
 type Notice = { text: string; kind: 'success' | 'error' };
 const Composer = lazy(() => import('./components/Composer').then(module => ({ default: module.Composer })));
 const AccountForm = lazy(() => import('./components/AccountForm').then(module => ({ default: module.AccountForm })));
+const AccountManager = lazy(() => import('./components/AccountManager').then(module => ({ default: module.AccountManager })));
 const OAuthSettings = lazy(() => import('./components/OAuth').then(module => ({ default: module.OAuthSettings })));
 const pageTitle = document.title;
 
@@ -60,10 +61,12 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
   const folders = useQuery({ queryKey: ['folders'], queryFn: () => api<Folder[]>('/folders') });
   const counts = useQuery({ queryKey: ['counts'], queryFn: () => api<UnreadCounts>('/counts') });
   const [filter, setFilter] = useState<Filter>({ view: 'inbox' });
+  const [expandedAccountId, setExpandedAccountId] = useState<string>();
   const [search, setSearch] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [selected, setSelected] = useState<Message | null>(null);
   const [accountForm, setAccountForm] = useState<{ id?: string } | null>(null);
+  const [accountManager, setAccountManager] = useState(false);
   const [composer, setComposer] = useState<{ draft?: Draft; accountId?: string; fresh?: boolean } | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
   const [oauthSettings, setOAuthSettings] = useState(false);
@@ -96,9 +99,11 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
   }, [messages.data, withPending]);
   const selectedMessage = selected && (rows.find(message => message.id === selected.id) ?? withPending(selected));
   const accountList = useMemo(() => accounts.data ?? [], [accounts.data]);
+  const canSend = accountList.some(account => account.sendEnabled);
+  const canReceive = accountList.some(account => account.receiveEnabled);
   const folderRows = useMemo(() => folderList(folders.data ?? []), [folders.data]);
   // A removed mailbox never reports that its sync ended.
-  const activeSync = useMemo(() => new Set([...syncing].filter(id => accountList.some(account => account.id === id))), [syncing, accountList]);
+  const activeSync = useMemo(() => new Set([...syncing].filter(id => accountList.some(account => account.id === id && account.receiveEnabled))), [syncing, accountList]);
 
   /** Opens the composer unless one is already open, so a slow answer cannot replace a message being typed. */
   function openComposer(next: NonNullable<typeof composer>, otherwise: string) {
@@ -195,24 +200,25 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     });
   }, [query, fail]);
 
-  function navigate(next: Filter) { setFilter(next); setSelected(null); setMobileNav(false); }
+  function navigate(next: Filter) {
+    setFilter(next); setSelected(null); setMobileNav(false); setExpandedAccountId(next.accountId);
+  }
+  function toggleAccount(id: string) {
+    if (expandedAccountId === id) { setExpandedAccountId(undefined); return; }
+    setExpandedAccountId(id); setFilter({ view: 'inbox', accountId: id }); setSelected(null);
+  }
   const select = useCallback((message: Message) => {
     setSelected(message);
-    if (!message.seen) void flag(message, { seen: true });
-  }, [flag]);
+    if (!message.seen && accountList.find(account => account.id === message.accountId)?.receiveEnabled) void flag(message, { seen: true });
+  }, [flag, accountList]);
   const closeReader = useCallback(() => {
     const id = selected?.id;
     setSelected(null);
     // Back in the list, the keyboard continues from the message that was open.
     if (id) requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-message-id="${id}"]`)?.focus());
   }, [selected?.id]);
-  async function removeAccount(account: Account) {
-    if (!window.confirm(`移除“${account.name}”及它在本机的邮件索引、缓存和草稿？服务器上的邮件不受影响。`)) return;
-    try { await api(`/accounts/${account.id}`, { method: 'DELETE' }); navigate({ view: 'inbox' }); await query.invalidateQueries(); }
-    catch (error) { fail(error); }
-  }
   function syncAll() {
-    for (const account of accountList) void api(`/accounts/${account.id}/sync`, { method: 'POST' }).catch(fail);
+    for (const account of accountList) if (account.receiveEnabled) void api(`/accounts/${account.id}/sync`, { method: 'POST' }).catch(fail);
   }
   async function openDraft(id: string) {
     try { openComposer({ draft: await api<Draft>(`/drafts/${id}`) }, '先处理正在写的邮件，再打开这封草稿。'); }
@@ -233,7 +239,7 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
   const account = accountList.find(item => item.id === filter.accountId);
   const folder = folderRows.find(item => item.folder.id === filter.folderId);
   const isDrafts = filter.view === 'drafts';
-  const replying = prepare.isPending;
+  const replying = prepare.isPending || !canSend;
   const reply = prepare.mutate;
 
   // Single-key shortcuts, as in other mail clients. They stay out of the way while typing or while a dialog is open.
@@ -247,7 +253,7 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
       const act: Record<string, (() => void) | false | null | undefined> = {
         Escape: open && closeReader,
         '/': !isDrafts && (() => searchBox.current?.focus()),
-        c: accountList.length > 0 && (() => setComposer(current => current ?? { accountId: filter.accountId })),
+        c: canSend && (() => setComposer(current => current ?? { accountId: filter.accountId })),
         r: open && !replying && (() => reply({ messageId: open.id, mode: 'reply', includeAttachments: true })),
         a: open && !replying && (() => reply({ messageId: open.id, mode: 'reply-all', includeAttachments: true })),
         f: open && !replying && (() => reply({ messageId: open.id, mode: 'forward', includeAttachments: true })),
@@ -260,7 +266,7 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     };
     document.addEventListener('keydown', keys);
     return () => document.removeEventListener('keydown', keys);
-  }, [isDrafts, selectedMessage, rows, accountList.length, filter.accountId, replying, reply, select, closeReader]);
+  }, [isDrafts, selectedMessage, rows, canSend, filter.accountId, replying, reply, select, closeReader]);
 
   const title = isDrafts ? '本地草稿' : searchTerm ? '搜索结果' : folder ? folder.label : account ? '收件箱' : filter.view === 'starred' ? '星标邮件' : filter.view === 'all' ? '所有邮件' : '统一收件箱';
   const total = isDrafts ? drafts.data?.length : messages.data?.pages[0]?.total;
@@ -270,19 +276,21 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     return index < 0 ? undefined : { name: accountList[index].name, color: accountColor(index) };
   } : undefined;
   // An empty list means little while the first sync of what is being viewed has not finished.
-  const stillSyncing = (account ? [account] : accountList).some(item => activeSync.has(item.id) || (item.lastSync === null && !item.error));
+  const stillSyncing = (account ? [account] : accountList).some(item => item.receiveEnabled && (activeSync.has(item.id) || (item.lastSync === null && !item.error)));
   const failing = accountList.filter(item => item.error);
   const empty = searchTerm ? <><Search size={30} strokeWidth={1.3} aria-hidden /><h3>没有找到相关邮件</h3><p>换个关键词试试。后台会逐步补全正文索引。</p></>
     : !accountList.length ? <><Inbox size={30} strokeWidth={1.3} aria-hidden /><h3>先连接一个邮箱</h3><p>连接后，邮件会同步到运行信屿的主机。</p><Button variant="primary" onClick={() => setAccountForm({})}><Plus size={15} aria-hidden />连接邮箱</Button></>
+    : account?.receiveEnabled === false ? <><Send size={30} strokeWidth={1.3} aria-hidden /><h3>此邮箱仅用于发信</h3><p>需要收信时，可在邮箱设置中开启。</p></>
     : stillSyncing ? <><RefreshCw size={30} strokeWidth={1.3} className="spin" aria-hidden /><h3>正在同步邮件…</h3><p>第一次同步需要一些时间，来信会陆续出现在这里。</p></>
     : <><Inbox size={30} strokeWidth={1.3} aria-hidden /><h3>这里没有邮件</h3><p>有新邮件时会出现在这里。</p></>;
   const sidebarProps = { accounts: accountList, folders: folders.data ?? [], filter, syncing: activeSync, connected, counts: counts.data,
+    expandedAccountId, onToggleAccount: toggleAccount,
     onNavigate: navigate, onClose: () => setMobileNav(false),
-    onEditAccount: (item: Account) => { setMobileNav(false); setAccountForm({ id: item.id }); },
+    onManageAccounts: () => { setMobileNav(false); setAccountManager(true); },
     onCompose: () => { setMobileNav(false); setComposer({ accountId: filter.accountId }); },
     onAddAccount: () => { setMobileNav(false); setAccountForm({}); },
     onOAuthSettings: () => { setMobileNav(false); setOAuthSettings(true); },
-    onRemoveAccount: (item: Account) => { void removeAccount(item); }, onLogout };
+    onLogout };
   const reading = !isDrafts && !!selectedMessage;
 
   return <div className="mail-app" inert={locked}>
@@ -302,7 +310,7 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
             {search && <button aria-label="清空搜索" onClick={() => setSearch('')}><X size={15} aria-hidden /></button>}
           </div>}
           {failing.length > 0 && <Button className="sync-alert" variant="ghost" aria-label={`${failing.length} 个邮箱同步失败，打开邮箱导航查看`} title={failing.map(item => `${item.name}：${item.error}`).join('\n')} onClick={() => setMobileNav(true)}><TriangleAlert size={17} aria-hidden /></Button>}
-          <Button variant="ghost" aria-label="同步全部邮箱" title="同步全部邮箱" disabled={!accountList.length || activeSync.size > 0} onClick={syncAll}><RefreshCw size={17} aria-hidden className={activeSync.size ? 'spin' : ''} /></Button>
+          <Button variant="ghost" aria-label="同步全部邮箱" title="同步全部邮箱" disabled={!canReceive || activeSync.size > 0} onClick={syncAll}><RefreshCw size={17} aria-hidden className={activeSync.size ? 'spin' : ''} /></Button>
         </div>
       </header>
       {notice && <div className={`notice notice-${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}><span>{notice.text}</span><button aria-label="关闭提示" onClick={() => setNotice(null)}><X size={16} aria-hidden /></button></div>}
@@ -316,12 +324,18 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
         </section>
         {isDrafts ? <section className="reader-empty"><FileText size={40} strokeWidth={1.1} aria-hidden /><p>选择一封草稿继续编辑</p><small>草稿保存在信屿服务端，可在其他设备继续编辑，不会同步到邮箱服务商。</small></section> : selectedMessage
           ? <Reader key={selectedMessage.id} message={selectedMessage} folders={folders.data ?? []} composing={replying} covering={covering}
+              receiving={accountList.find(account => account.id === selectedMessage.accountId)?.receiveEnabled ?? true}
               accountName={accountList.length > 1 ? accountList.find(item => item.id === selectedMessage.accountId)?.name : undefined}
               onReply={(mode, includeAttachments = true) => reply({ messageId: selectedMessage.id, mode, includeAttachments })}
               onBack={closeReader} onSelect={select} onFlag={patch => { void flag(selectedMessage, patch); }} onMoved={() => setSelected(null)} />
           : <ReaderEmpty />}
       </div>
     </main>
+    {accountManager && !accountForm && <Suspense fallback={null}><AccountManager accounts={accountList} onClose={() => setAccountManager(false)}
+      onAdd={() => setAccountForm({})} onEdit={account => setAccountForm({ id: account.id })} onRemoved={id => {
+        if (filter.accountId === id || selected?.accountId === id) navigate({ view: 'inbox' });
+        else if (expandedAccountId === id) setExpandedAccountId(undefined);
+      }} /></Suspense>}
     {accountForm && <Suspense fallback={null}><AccountForm accountId={accountForm.id} onClose={() => setAccountForm(null)} onSaved={id => navigate({ view: 'inbox', accountId: id })} /></Suspense>}
     {oauthSettings && <Suspense fallback={null}><OAuthSettings onClose={() => setOAuthSettings(false)} /></Suspense>}
     {composer && <Suspense fallback={null}><Composer key={composer.draft?.id ?? 'new'} accounts={accountList} draft={composer.draft} accountId={composer.accountId} fresh={composer.fresh} onClose={() => setComposer(null)}

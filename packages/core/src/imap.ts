@@ -147,7 +147,6 @@ export class ImapAdapter implements MailAdapter {
     finally { lock.release(); }
   }
   async send(input: SendInput, sentPath?: string, attachments: OutgoingAttachment[] = []) {
-    if (this.account.sentCopy === 'append' && !sentPath) throw new Error('请先在邮箱中创建已发送文件夹，并同步后再发送');
     const message = new MailComposer({
       from: { name: this.account.name, address: this.account.email }, to: input.to, cc: input.cc,
       subject: input.subject, text: input.text, html: input.html,
@@ -162,9 +161,12 @@ export class ImapAdapter implements MailAdapter {
       });
       const warnings: string[] = [];
       if (result.rejected.length) warnings.push(`部分收件人被服务器拒绝：${result.rejected.join('、')}。请勿向已接受的收件人重复发送。`);
-      if (this.account.sentCopy === 'append') {
+      if (this.account.receiveEnabled && this.account.sentCopy === 'append') {
         // A slow SMTP upload can outlast the idle timeout of the IMAP connection, so it is reopened when needed.
-        try { await this.connect(); await this.client.append(sentPath!, raw, ['\\Seen']); }
+        try {
+          if (!sentPath) throw new Error('没有可用的已发送文件夹');
+          await this.connect(); await this.client.append(sentPath, raw, ['\\Seen']);
+        }
         catch { warnings.push('邮件已发送，但保存已发送副本失败。请勿重复发送。'); }
       }
       return { messageId: result.messageId, ...(warnings.length ? { warning: warnings.join(' ') } : {}) };

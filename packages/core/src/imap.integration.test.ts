@@ -113,9 +113,25 @@ describe('real GreenMail IMAP / SMTP round trip', () => {
       await Promise.race([changed, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error('IDLE notification timed out')), 10_000); timer.unref(); })]);
     } finally { stop(); await adapter.close(); }
   });
-  it('rejects invalid SMTP credentials before storing an account', async () => {
+  it('stores a receiving account despite invalid SMTP credentials and reports failure only when sending', async () => {
     const before = store.accounts().length;
-    await expect(service.addAccount({ ...config, smtp: { ...config.smtp, password: 'incorrect-test-password' } })).rejects.toThrow();
+    const id = await service.addAccount({ ...config, smtp: { ...config.smtp, password: 'incorrect-test-password' } });
+    try {
+      expect(store.accounts()).toHaveLength(before + 1);
+      await expect(service.send({ accountId: id, to: ['bob@example.com'], cc: [], bcc: [], subject: `${unique} rejected SMTP`, text: 'not delivered', references: [], attachmentIds: [] })).rejects.toThrow();
+    } finally { await service.deleteAccount(id); }
+  });
+  it('verifies and sends through SMTP with an unreachable IMAP server when receiving is disabled', async () => {
+    const id = await service.addAccount({ ...config, receiveEnabled: false, imap: { ...config.imap, port: 1 } });
+    try {
+      const result = await service.send({ accountId: id, to: ['bob@example.com'], cc: [], bcc: [], subject: `${unique} send-only`, text: 'SMTP only', references: [], attachmentIds: [] });
+      expect(result.messageId).toBeTruthy(); expect(result.warning).toBeUndefined();
+      expect(store.folders(id)).toEqual([]); expect(store.account(id)?.error).toBeNull();
+    } finally { await service.deleteAccount(id); }
+  });
+  it('rejects invalid SMTP credentials when adding a send-only account', async () => {
+    const before = store.accounts().length;
+    await expect(service.addAccount({ ...config, receiveEnabled: false, smtp: { ...config.smtp, password: 'incorrect-test-password' } })).rejects.toThrow();
     expect(store.accounts()).toHaveLength(before);
   });
   it('does not append a second copy when server-side sent saving is selected', async () => {

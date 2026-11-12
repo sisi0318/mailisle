@@ -125,10 +125,14 @@ legend{font-size:13px;padding:0 6px;color:var(--text-2)}
 .sidebar-label{font-size:12px;color:var(--text-3);margin:22px 12px 6px;display:flex;align-items:center;justify-content:space-between}
 .sidebar-label button{display:flex;padding:4px;border-radius:5px}
 .sidebar-label button:hover{background:var(--hover-strong)}
+.sidebar-actions{display:flex;align-items:center;gap:4px}
+.account-channels{display:flex;gap:24px;align-items:center}
 .account-list{overflow:auto;flex:1;min-height:0}
 .account-button{display:flex;align-items:center;gap:10px;padding:8px 12px;width:100%;border-radius:7px;text-align:left}
 .account-button:hover{background:var(--hover-strong)}
 .account-button.active{background:var(--accent-soft)}
+.account-chevron{flex-shrink:0;color:var(--text-3);transition:transform .15s}
+.account-button[aria-expanded="true"] .account-chevron{transform:rotate(90deg)}
 /* A square, so it is not mistaken for the round unread dot. */
 .account-mark{width:10px;height:10px;border-radius:3px;flex-shrink:0}
 .account-text{min-width:0;flex:1;display:flex;flex-direction:column}
@@ -140,7 +144,11 @@ legend{font-size:13px;padding:0 6px;color:var(--text-2)}
 .folder-list button span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .folder-list button:hover{background:var(--hover-strong)}
 .folder-list button.active{background:var(--accent-soft);color:var(--accent-strong);font-weight:600}
-.folder-list .remove-account{font-size:12px;color:var(--danger);margin-top:4px}
+.account-manager-list{list-style:none;margin:0;padding:0}
+.account-manager-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}
+.account-manager-summary{display:flex;align-items:center;gap:10px;flex:1;min-width:0}
+.account-manager-actions{display:flex;align-items:center;gap:4px;flex-shrink:0}
+@media(max-width:600px){.account-manager-row{align-items:stretch;flex-direction:column}.account-manager-actions{justify-content:flex-end}}
 .add-account{display:flex;align-items:center;gap:10px;margin-top:4px;padding:8px 12px;width:100%;border-radius:7px;font-size:13px;color:var(--text-2)}
 .add-account:hover{background:var(--hover-strong)}
 .sidebar-bottom{border-top:1px solid var(--line-strong);padding:10px 12px 0;display:flex;flex-direction:column;gap:6px;color:var(--text-3);font-size:12px}

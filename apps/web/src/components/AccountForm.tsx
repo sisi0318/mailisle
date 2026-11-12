@@ -8,6 +8,7 @@ import { oauthStartSchema, type OAuthStarted, type OAuthStart, type OAuthClientS
 import { OAuthAuthorization, OAuthClientFields } from './OAuth';
 
 const labels = {
+  receiveEnabled: '邮箱用途', sendEnabled: '邮箱用途',
   name: '显示名称', email: '邮箱地址', proxy: '代理地址', sentCopy: '已发送副本',
   'imap.host': 'IMAP 服务器', 'imap.port': 'IMAP 端口', 'imap.security': 'IMAP 加密方式', 'imap.user': 'IMAP 登录名', 'imap.password': '密码',
   'smtp.host': 'SMTP 服务器', 'smtp.port': 'SMTP 端口', 'smtp.security': 'SMTP 加密方式', 'smtp.user': 'SMTP 登录名', 'smtp.password': '发信密码',
@@ -30,6 +31,8 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
   const [discovered, setDiscovered] = useState<AutoConfig | null>(null);
   const [discoveryVersion, setDiscoveryVersion] = useState(0);
   const [clearProxy, setClearProxy] = useState(false);
+  const [receiveEnabled, setReceiveEnabled] = useState(settings?.receiveEnabled ?? true);
+  const [sendEnabled, setSendEnabled] = useState(settings?.sendEnabled ?? true);
   const [authMode, setAuthMode] = useState(settings?.oauth ? 'oauth' : settings ? 'password' : 'auto');
   const [clientSource, setClientSource] = useState(settings?.oauth ? 'saved' : 'automatic');
   const [authorization, setAuthorization] = useState<OAuthStarted | null>(null);
@@ -62,7 +65,7 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
     const password = String(form.get('password') ?? '');
     const server = (protocol: 'imap' | 'smtp') => ({ host: value(`${protocol}Host`), port: Number(value(`${protocol}Port`)), security: value(`${protocol}Security`),
       user: value(`${protocol}User`) || value('email'), password: String(form.get(`${protocol}Password`) || password) || (accountId ? undefined : '') });
-    const account = { name: value('name') || preset?.name || value('email'), email: value('email'),
+    const account = { name: value('name') || preset?.name || value('email'), email: value('email'), receiveEnabled, sendEnabled,
       imap: server('imap'), smtp: server('smtp'), proxy: clearProxy ? '' : value('proxy') || undefined, sentCopy: value('sentCopy') };
     const onlySave = settingsOnly.current;
     settingsOnly.current = false;
@@ -87,6 +90,12 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
     {authorization && <OAuthAuthorization session={authorization} onSaved={saved} onBusy={setAuthorizing} onCancel={() => { setAuthorization(null); start.reset(); }} />}
     <form onSubmit={submit} className="account-form" noValidate style={authorization ? { display: 'none' } : undefined}><fieldset className="form-fields" disabled={save.isPending || start.isPending}>
       <div className="form-grid"><label>邮箱地址<input name="email" type="email" required autoFocus value={email} onChange={event => setEmail(event.target.value)} placeholder="you@example.com" /></label><label>显示名称（选填）<input name="name" defaultValue={settings?.name} placeholder={preset?.name ?? '例如：工作邮箱'} /></label></div>
+      <div className="account-channels" role="group" aria-label="邮箱用途">
+        <label className="checkbox-label"><input type="checkbox" checked={receiveEnabled} onChange={event => setReceiveEnabled(event.target.checked)} />收信</label>
+        <label className="checkbox-label"><input type="checkbox" checked={sendEnabled} onChange={event => setSendEnabled(event.target.checked)} />发信</label>
+      </div>
+      <p className="hint">{receiveEnabled ? sendEnabled ? '收信成功即可添加，发信在发送时检查。' : '只检查收信，不连接发信服务器。' : sendEnabled ? '只检查发信，不连接收信服务器。' : '请至少开启收信或发信。'}</p>
+      {!receiveEnabled && sendEnabled && <p className="hint">仅发信时，信屿不保存已发送副本；原邮箱是否自动保存由服务商决定。</p>}
       <label>邮箱服务商<select value={providerId} onChange={event => { setProviderId(event.target.value); setServersOpen(null); setError(''); save.reset(); setAuthMode(settings?.oauth ? 'oauth' : 'auto'); setClientSource('automatic'); }}>
         <option value="auto">自动识别{detected ? `：${detected.name}` : ''}</option>{providerPresets.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
         {discovered && <option value="discovered">在线配置：{discovered.name}</option>}<option value="custom">其他（手动填写服务器）</option>
@@ -101,22 +110,22 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
       {oauthProvider && proxyFields}
       <details className="advanced" open={serversOpen ?? !preset}>
         <summary onClick={event => { event.preventDefault(); setServersOpen(!(serversOpen ?? !preset)); }}>服务器与高级设置{preset && <span>已按 {preset.name} 填好</span>}</summary>
-        <div className="form-grid" key={presetKey}>{(['imap', 'smtp'] as const).map(protocol => {
+        <div className="form-grid" key={presetKey} style={!receiveEnabled || !sendEnabled ? { gridTemplateColumns: '1fr' } : undefined}>{(['imap', 'smtp'] as const).map(protocol => {
           const server = preset?.[protocol] ?? settings?.[protocol];
           const user = providerId === 'discovered' ? discovered?.[protocol].user : !preset ? settings?.[protocol].user : '';
-          return <fieldset key={protocol}><legend>{protocol === 'imap' ? '收信（IMAP）' : '发信（SMTP）'}</legend>
+          return <fieldset key={protocol} style={!(protocol === 'imap' ? receiveEnabled : sendEnabled) ? { display: 'none' } : undefined}><legend>{protocol === 'imap' ? '收信（IMAP）' : '发信（SMTP）'}</legend>
             <label>服务器<input name={`${protocol}Host`} required defaultValue={server?.host ?? ''} placeholder={`${protocol}.example.com`} /></label>
             <div className="server-options"><label>端口<input name={`${protocol}Port`} type="number" min={1} max={65535} required defaultValue={server?.port ?? (protocol === 'imap' ? 993 : 465)} /></label><label>加密<select name={`${protocol}Security`} defaultValue={server?.security ?? 'tls'}><option value="tls">TLS</option><option value="starttls">STARTTLS</option><option value="plain">不加密（仅本机）</option></select></label></div>
             <label>登录名（选填）<input name={`${protocol}User`} defaultValue={user} placeholder="默认用邮箱地址" /></label>
             {protocol === 'smtp' && !useOAuth && <label>独立发信密码（选填）<input name="smtpPassword" type="password" autoComplete="new-password" placeholder={accountId ? '留空保留，或使用上面新填写的密码' : '默认与上面相同'} /></label>}
           </fieldset>;
         })}</div>
-        <label>已发送的邮件<select name="sentCopy" key={presetKey} defaultValue={preset?.sentCopy ?? settings?.sentCopy ?? 'append'}><option value="append">由本应用存入“已发送”（多数邮箱）</option><option value="server">服务商会自动保存（Gmail、Outlook）</option></select></label>
+        <label style={!receiveEnabled || !sendEnabled ? { display: 'none' } : undefined}>已发送的邮件<select name="sentCopy" key={presetKey} defaultValue={preset?.sentCopy ?? settings?.sentCopy ?? 'append'}><option value="append">由本应用存入“已发送”（多数邮箱）</option><option value="server">服务商会自动保存（Gmail、Outlook）</option></select></label>
         {!oauthProvider && proxyFields}
       </details>
     </fieldset>
     {(error || save.error || discover.error || start.error || clients.error) && <p className="error" role="alert">{error || save.error?.message || discover.error?.message || start.error?.message || clients.error?.message}</p>}
-    <div className="form-footer"><span className="hint">验证收发信后保存，凭据加密存储。</span>
+    <div className="form-footer"><span className="hint">{receiveEnabled ? '检查收信后保存，凭据加密存储。' : '检查发信后保存，凭据加密存储。'}</span>
       {/* Not a submit button: Enter in a field would pick the first one, and saving would drop a client ID typed for re-authorisation. */}
       {settings?.oauth && <Button type="button" disabled={save.isPending || start.isPending} onClick={event => { settingsOnly.current = true; event.currentTarget.form?.requestSubmit(); }}>保存设置</Button>}
       <Button type="submit" variant="primary" disabled={save.isPending || start.isPending || blocked || (useOAuth && !clients.data)}>{blocked ? '暂不支持' : save.isPending || start.isPending ? '正在处理…' : useOAuth ? settings?.oauth ? '重新授权' : '开始 OAuth 授权' : accountId ? '保存设置' : '连接'}</Button></div>

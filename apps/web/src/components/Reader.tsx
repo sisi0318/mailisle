@@ -16,6 +16,7 @@ type Props = {
   covering: boolean;
   onReply: (mode: ComposeMode, includeAttachments?: boolean) => void;
   composing: boolean;
+  receiving: boolean;
   onBack: () => void;
   onSelect: (message: Message) => void;
   onFlag: (patch: { seen?: boolean; starred?: boolean }) => void;
@@ -25,7 +26,7 @@ type Props = {
 
 const people = (list: Address[]) => list.map(item => item.name ? `${item.name} <${item.address}>` : item.address).join('、');
 
-export function Reader({ message, folders, accountName, covering, onReply, composing, onBack, onSelect, onFlag, onMoved }: Props) {
+export function Reader({ message, folders, accountName, covering, onReply, composing, receiving, onBack, onSelect, onFlag, onMoved }: Props) {
   const query = useQueryClient();
   const back = useRef<HTMLButtonElement>(null);
   const [expanded, setExpanded] = useState(false);
@@ -38,7 +39,7 @@ export function Reader({ message, folders, accountName, covering, onReply, compo
   const rendered = useMemo(() => body.data?.html ? mailDocument(body.data.html, body.data.inlineImages, { remoteImages: showImages }) : null, [body.data?.html, body.data?.inlineImages, showImages]);
   // The list underneath cannot be reached while the reader covers it, so keyboard focus moves along.
   useEffect(() => { if (covering) back.current?.focus(); }, [covering]);
-  const targets = folderList(folders.filter(folder => folder.accountId === message.accountId));
+  const targets = receiving ? folderList(folders.filter(folder => folder.accountId === message.accountId)) : [];
   const byRole = (role: FolderRole) => targets.find(({ folder }) => folder.role === role)?.folder;
   const archive = byRole('archive');
   const trash = byRole('trash');
@@ -57,8 +58,8 @@ export function Reader({ message, folders, accountName, covering, onReply, compo
       <Button variant="ghost" disabled={composing} aria-label="转发，带上附件" title="转发并携带附件（含内嵌图片文件）" onClick={() => onReply('forward')}><Forward size={17} aria-hidden /></Button>
       <Button variant="ghost" disabled={composing} className="forward-text" title="转发，不带附件" onClick={() => onReply('forward', false)}>仅转发正文</Button>
       <span className="toolbar-separator" />
-      <Button variant="ghost" aria-label={message.seen ? '标为未读' : '标为已读'} title={message.seen ? '标为未读' : '标为已读'} onClick={() => onFlag({ seen: !message.seen })}>{message.seen ? <Mail size={17} aria-hidden /> : <MailOpen size={17} aria-hidden />}</Button>
-      <Button variant="ghost" aria-label={message.starred ? '取消星标' : '加星标'} title={message.starred ? '取消星标' : '加星标'} aria-pressed={message.starred} className={message.starred ? 'starred' : ''} onClick={() => onFlag({ starred: !message.starred })}><Star size={17} aria-hidden fill={message.starred ? 'currentColor' : 'none'} /></Button>
+      <Button variant="ghost" disabled={!receiving} aria-label={message.seen ? '标为未读' : '标为已读'} title={!receiving ? '此邮箱已关闭收信' : message.seen ? '标为未读' : '标为已读'} onClick={() => onFlag({ seen: !message.seen })}>{message.seen ? <Mail size={17} aria-hidden /> : <MailOpen size={17} aria-hidden />}</Button>
+      <Button variant="ghost" disabled={!receiving} aria-label={message.starred ? '取消星标' : '加星标'} title={!receiving ? '此邮箱已关闭收信' : message.starred ? '取消星标' : '加星标'} aria-pressed={message.starred} className={message.starred ? 'starred' : ''} onClick={() => onFlag({ starred: !message.starred })}><Star size={17} aria-hidden fill={message.starred ? 'currentColor' : 'none'} /></Button>
       <Button variant="ghost" aria-label="归档" title={archive ? '归档' : '这个邮箱没有归档文件夹'} disabled={move.isPending || !archive} onClick={() => move.mutate(archive!.id)}><Archive size={17} aria-hidden /></Button>
       <Button variant="ghost" aria-label="移到已删除" title={trash ? '移到已删除' : '这个邮箱没有已删除文件夹'} disabled={move.isPending || !trash} onClick={() => move.mutate(trash!.id)}><Trash2 size={17} aria-hidden /></Button>
       <MoveMenu targets={targets} pending={move.isPending} onMove={folderId => move.mutate(folderId)} />

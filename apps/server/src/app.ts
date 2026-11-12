@@ -11,7 +11,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { accountSchema, accountUpdateSchema, composeSchema, discoverySchema, draftSchema, flagsSchema, listSchema, loginSchema, MAX_ATTACHMENT_BYTES, moveSchema, sendSchema, type SyncEvent } from '@mail/shared';
 import { discoverAccount, errorStatus, publicError, UserError, verifyPassword, type MailService } from '@mail/core';
-import { oauthStartSchema, oauthProviderSchema, oauthClientUpdateSchema, oauthCallbackSchema } from '@mail/shared';
+import { accountOrderSchema, oauthStartSchema, oauthProviderSchema, oauthClientUpdateSchema, oauthCallbackSchema } from '@mail/shared';
 import { createAccessPolicy } from './access';
 import { SESSION_SECONDS, WebSessions } from './sessions';
 import { clientKey, LoginLimiter } from './login-limit';
@@ -79,6 +79,12 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     return c.json({ ok: true });
   });
   app.get('/api/accounts', c => c.json(service.store.accounts()));
+  app.put('/api/accounts/order', async c => {
+    const parsed = accountOrderSchema.safeParse(await readJson(c));
+    if (!parsed.success) return c.json({ error: '邮箱顺序不正确，请刷新后重试' }, 400);
+    service.reorderAccounts(parsed.data.accountIds);
+    return c.json(service.store.accounts());
+  });
   app.get('/api/oauth/clients', c => c.json(service.oauth.settings()));
   app.put('/api/oauth/clients/:provider', async c => {
     const provider = oauthProviderSchema.safeParse(c.req.param('provider'));

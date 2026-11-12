@@ -6,6 +6,9 @@ export const settings = sqliteTable('settings', { key: text('key').primaryKey(),
 export const accounts = sqliteTable('accounts', {
   id: text('id').primaryKey(), name: text('name').notNull(), email: text('email').notNull(),
   encryptedConfig: text('encrypted_config').notNull(), lastSync: integer('last_sync'), error: text('error'),
+  sortOrder: integer('sort_order').notNull().default(0),
+  receiveEnabled: integer('receive_enabled', { mode: 'boolean' }).notNull().default(true),
+  sendEnabled: integer('send_enabled', { mode: 'boolean' }).notNull().default(true),
 });
 export const folders = sqliteTable('folders', {
   id: text('id').primaryKey(), accountId: text('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),

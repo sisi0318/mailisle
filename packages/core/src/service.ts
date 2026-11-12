@@ -45,7 +45,7 @@ export class MailService {
     this.stopped = false;
     this.prefetcher.start();
     const tick = () => {
-      for (const account of this.store.accounts()) void this.sync(account.id);
+      for (const account of this.store.accounts()) if (account.receiveEnabled) void this.sync(account.id);
       if (Date.now() >= this.nextCleanup) {
         this.nextCleanup = Date.now() + 3_600_000;
         void this.uploads?.cleanup().catch(error => console.warn('临时附件清理失败', publicError(error)));
@@ -72,11 +72,9 @@ export class MailService {
     let id: string | undefined;
     const adapter = this.makeAdapter(config, () => id);
     try {
-      await adapter.connect();
-      const folders = await adapter.listFolders();
-      await adapter.verifySmtp();
-      id = this.store.addAccount(config.name, config.email, this.vault.encrypt(config));
-      this.store.saveFolders(id, folders);
+      const folders = await this.verifyAccount(adapter, config);
+      id = this.store.addAccount(config.name, config.email, this.vault.encrypt(config), config);
+      if (config.receiveEnabled) this.store.saveFolders(id, folders);
       this.adapters.set(id, adapter);
       void this.sync(id);
       return id;
@@ -94,17 +92,26 @@ export class MailService {
     this.emit({ type: 'sync', accountId: id, state: 'idle' });
     this.emit({ type: 'change', accountId: id });
   }
+  reorderAccounts(ids: string[]) {
+    const current = new Set(this.store.accounts().map(account => account.id));
+    if (current.size !== ids.length || ids.some(id => !current.has(id))) throw new UserError('邮箱列表已变化，请刷新后重试', 409);
+    this.store.reorderAccounts(ids);
+    this.emit({ type: 'change', accountId: ids[0] });
+  }
   accountSettings(id: string): AccountSettings {
     const config = this.accountConfig(id);
     const { password: _imapPassword, ...imap } = config.imap;
     const { password: _smtpPassword, ...smtp } = config.smtp;
     const proxy = config.proxy ? new URL(config.proxy) : undefined;
     return { name: config.name, email: config.email, sentCopy: config.sentCopy, imap, smtp,
+      receiveEnabled: config.receiveEnabled, sendEnabled: config.sendEnabled,
       ...(config.oauth ? { oauth: { provider: config.oauth.provider, client: { source: config.oauth.client.source, clientId: config.oauth.client.clientId, hasSecret: !!config.oauth.client.clientSecret } } } : {}),
       ...(proxy ? { proxyDisplay: `${proxy.protocol}//${proxy.host}` } : {}) };
   }
   async updateAccount(id: string, input: AccountUpdate) {
     const old = this.accountConfig(id);
+    if (!input.receiveEnabled && !input.imap.host) input = { ...input, imap: { ...old.imap, password: undefined } };
+    if (!input.sendEnabled && !input.smtp.host) input = { ...input, smtp: { ...old.smtp, password: undefined } };
     if (old.oauth && (input.imap.password || input.smtp.password)) throw new UserError('OAuth 邮箱不使用密码，请点击重新授权');
     // A stored password only ever goes to the server it was entered for.
     for (const protocol of ['imap', 'smtp'] as const) {
@@ -129,12 +136,12 @@ export class MailService {
     const adapter = this.makeAdapter(config, () => saved || keepOAuth ? id : undefined);
     this.beginAccountChange(id);
     try {
-      await adapter.connect(); await adapter.listFolders(); await adapter.verifySmtp();
+      await this.verifyAccount(adapter, config);
       await this.pauseAccount(id);
       if (keepOAuth) config.oauth = this.accountConfig(id).oauth;
       const reset = old.imap.host !== config.imap.host || old.imap.port !== config.imap.port || old.imap.user !== config.imap.user;
       if (reset) cached = this.store.messageIds(id);
-      this.store.updateAccount(id, config.name, config.email, this.vault.encrypt(config), reset);
+      this.store.updateAccount(id, config.name, config.email, this.vault.encrypt(config), reset, config);
       saved = true;
       this.adapters.set(id, adapter);
     } catch (error) { await adapter.close(); throw error; }
@@ -143,7 +150,7 @@ export class MailService {
     this.emit({ type: 'change', accountId: id });
   }
   sync(id: string): Promise<void> {
-    if (this.stopped || this.changingAccounts.has(id)) return Promise.resolve();
+    if (this.stopped || this.changingAccounts.has(id) || this.store.account(id)?.receiveEnabled === false) return Promise.resolve();
     if (this.running.has(id)) {
       this.pendingSync.add(id);
       return this.running.get(id)!;
@@ -189,7 +196,7 @@ export class MailService {
     if (input.draftId && this.store.draft(input.draftId)?.accountId !== input.accountId) throw new Error('草稿不存在或发件人已改变，请先保存草稿');
     const attachments = input.attachmentIds.length ? await this.requireUploads().attachments(input.attachmentIds) : [];
     const sent = this.store.folders(input.accountId).find(folder => folder.role === 'sent');
-    const result = await this.withAdapter(input.accountId, adapter => adapter.send(input, sent?.path, attachments));
+    const result = await this.withAdapter(input.accountId, adapter => adapter.send(input, sent?.path, attachments), 'send');
     try { if (input.draftId) await this.deleteDraft(input.draftId); }
     catch { result.warning = [result.warning, '邮件已发送，但清理草稿失败，请勿重复发送。'].filter(Boolean).join(' '); }
     await this.cleanupUploads(input.attachmentIds);
@@ -329,11 +336,12 @@ export class MailService {
       await this.syncAccount(id);
     } while (!this.stopped && !this.changingAccounts.has(id) && this.pendingSync.has(id));
   }
-  private async withAdapter<T>(id: string, action: (adapter: MailAdapter) => Promise<T>): Promise<T> {
+  private async withAdapter<T>(id: string, action: (adapter: MailAdapter) => Promise<T>, channel: 'receive' | 'send' = 'receive'): Promise<T> {
     if (this.stopped) throw new UserError('邮件服务正在关闭', 503);
     if (this.changingAccounts.has(id)) throw new UserError('邮箱配置正在更新，请稍后重试', 409);
     const account = this.store.account(id);
     if (!account) throw new UserError('账号不存在', 404);
+    if (!(channel === 'receive' ? account.receiveEnabled : account.sendEnabled)) throw new UserError(`此邮箱已关闭${channel === 'receive' ? '收信' : '发信'}，请在邮箱设置中开启`, 409);
     let adapter = this.adapters.get(id);
     if (!adapter) {
       adapter = this.makeAdapter(this.accountConfig(id), () => id);
@@ -341,7 +349,7 @@ export class MailService {
     }
     const operations = this.operations.get(id) ?? new Set<Promise<unknown>>();
     this.operations.set(id, operations);
-    const work = adapter.connect().then(() => action(adapter));
+    const work = (channel === 'receive' ? adapter.connect() : Promise.resolve()).then(() => action(adapter));
     operations.add(work);
     try { return await work; }
     finally { operations.delete(work); if (!operations.size) this.operations.delete(id); }
@@ -349,7 +357,12 @@ export class MailService {
   private accountConfig(id: string) {
     const account = this.store.account(id);
     if (!account) throw new UserError('邮箱不存在', 404);
-    return this.vault.decrypt<AccountConfig>(account.encryptedConfig);
+    return { ...this.vault.decrypt<AccountConfig>(account.encryptedConfig), receiveEnabled: account.receiveEnabled, sendEnabled: account.sendEnabled };
+  }
+  private async verifyAccount(adapter: MailAdapter, config: AccountConfig) {
+    if (config.receiveEnabled) { await adapter.connect(); return adapter.listFolders(); }
+    await adapter.verifySmtp();
+    return [];
   }
   private makeAdapter(config: AccountConfig, accountId: () => string | undefined) {
     return this.adapterFactory(config, config.oauth ? () => this.oauth.accessToken(config, accountId()) : undefined);

@@ -37,6 +37,8 @@ type Props = {
 };
 
 export function Composer({ accounts, draft, accountId, fresh = false, onClose, onSent }: Props) {
+  const [senderId, setSenderId] = useState(draft?.accountId ?? accounts.find(account => account.id === accountId && account.sendEnabled)?.id ?? accounts.find(account => account.sendEnabled)?.id ?? accounts[0]?.id);
+  const canSend = !!accounts.find(account => account.id === senderId)?.sendEnabled;
   const query = useQueryClient();
   const form = useRef<HTMLFormElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -150,6 +152,7 @@ export function Composer({ accounts, draft, accountId, fresh = false, onClose, o
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
+    if (!canSend) { setError('此邮箱已关闭发信，请更换发件人或开启发信。'); return; }
     const content = input();
     if (!content) return;
     if (!content.subject.trim() && !window.confirm('这封邮件没有主题，仍然发送吗？')) return;
@@ -182,7 +185,8 @@ export function Composer({ accounts, draft, accountId, fresh = false, onClose, o
   return <Modal title={draft && !fresh ? '编辑草稿' : '写邮件'} wide className="composer-modal" onClose={requestClose}>
     <form ref={form} className="composer" onSubmit={submit} onInput={changed} onKeyDown={shortcut}>
       <fieldset className="form-fields" disabled={busy}>
-        <label>发件人<select name="accountId" defaultValue={draft?.accountId ?? accountId ?? accounts[0]?.id}>{accounts.map(account => <option key={account.id} value={account.id}>{account.name} &lt;{account.email}&gt;</option>)}</select></label>
+        <label>发件人<select name="accountId" value={senderId} onChange={event => setSenderId(event.target.value)}>{accounts.map(account => <option key={account.id} value={account.id}>{account.name} &lt;{account.email}&gt;{!account.sendEnabled ? '（发信已关闭）' : ''}</option>)}</select></label>
+        {!canSend && <p className="hint">此邮箱已关闭发信，可保存草稿或更换发件人。</p>}
         <div className="compose-address"><div className="label-row"><label htmlFor="composer-to">收件人</label>{!showCopies && <button type="button" className="link-button" onClick={() => setShowCopies(true)}>添加抄送、密送</button>}</div><input id="composer-to" name="to" autoFocus={!draft} defaultValue={draft?.to ?? ''} placeholder="多个地址用逗号分隔" /></div>
         {showCopies && <div className="form-grid"><label>抄送<input name="cc" defaultValue={draft?.cc ?? ''} /></label><label>密送<input name="bcc" defaultValue={draft?.bcc ?? ''} /></label></div>}
         <label>主题<input name="subject" defaultValue={draft?.subject ?? ''} /></label>
@@ -198,7 +202,7 @@ export function Composer({ accounts, draft, accountId, fresh = false, onClose, o
       <div className="composer-bottom">
         {(error || save.error || send.error || upload.error || discard.error) && <p className="error" role="alert">{error || send.error?.message || save.error?.message || upload.error?.message || discard.error?.message}</p>}
         <div className="compose-status" role="status">{upload.isPending ? '正在上传附件…' : dirty ? '有未保存的修改' : status}<span>附件合计不超过 20 MiB · Ctrl + Enter 发送 · Ctrl + S 保存</span></div>
-        <div className="form-footer"><Button type="button" variant="ghost" disabled={busy} onClick={() => setAsking('delete')}><Trash2 size={16} aria-hidden />{saved ? '删除草稿' : '丢弃'}</Button><div className="button-row"><Button type="button" disabled={busy} onClick={() => saveCurrent()}><Save size={16} aria-hidden />{save.isPending ? '保存中…' : '保存草稿'}</Button><Button type="submit" variant="primary" disabled={busy}><Send size={16} aria-hidden />{send.isPending ? '正在发送…' : '发送'}</Button></div></div>
+        <div className="form-footer"><Button type="button" variant="ghost" disabled={busy} onClick={() => setAsking('delete')}><Trash2 size={16} aria-hidden />{saved ? '删除草稿' : '丢弃'}</Button><div className="button-row"><Button type="button" disabled={busy} onClick={() => saveCurrent()}><Save size={16} aria-hidden />{save.isPending ? '保存中…' : '保存草稿'}</Button><Button type="submit" variant="primary" disabled={busy || !canSend}><Send size={16} aria-hidden />{send.isPending ? '正在发送…' : '发送'}</Button></div></div>
       </div>
     </form>
     {asking === 'close' && <Modal title="保存这封邮件吗？" description={saved ? '上次保存之后还有修改。' : '这封邮件还没有保存。'} onClose={() => setAsking(null)}>

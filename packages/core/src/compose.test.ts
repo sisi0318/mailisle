@@ -3,7 +3,7 @@ import type { Account, Message, MessageBody } from '@mail/shared';
 import { composeDraft } from './compose';
 import { record } from '../../../tests/fixtures';
 
-const accounts: Account[] = [{ id: 'a', name: 'Me', email: 'me@example.com', lastSync: null, error: null }, { id: 'b', name: 'Other', email: 'other@example.com', lastSync: null, error: null }];
+const accounts: Account[] = [{ id: 'a', name: 'Me', email: 'me@example.com', lastSync: null, error: null }, { id: 'b', name: 'Other', email: 'other@example.com', lastSync: null, error: null }].map(account => ({ ...account, receiveEnabled: true, sendEnabled: true }));
 const message: Message = { ...record(), id: 'm', accountId: 'a', threadId: 't', cached: true, seen: true, starred: false, preview: '',
   subject: '讨论', from: [{ name: 'Sender', address: 'sender@example.com' }], replyTo: [{ name: '', address: 'reply@example.com' }],
   to: [{ name: '', address: 'me@example.com' }, { name: '', address: 'team@example.com' }] };

@@ -15,7 +15,7 @@ export function record(uid = 1, changes: Partial<MailMetadata> = {}): MailMetada
     subject: '电子发票与合同', from: [{ name: '财务部', address: 'billing@example.com' }], to: [{ name: 'Alice', address: 'alice@example.com' }], replyTo: [], date: Date.UTC(2026, 10, uid), flags: [], ...changes };
 }
 export function accountConfig(): AccountInput {
-  return { name: 'Alice', email: 'alice@example.com', sentCopy: 'append',
+  return { name: 'Alice', email: 'alice@example.com', sentCopy: 'append', receiveEnabled: true, sendEnabled: true,
     imap: { host: '127.0.0.1', port: 3143, security: 'plain', user: 'alice@example.com', password: 'test-password' },
     smtp: { host: '127.0.0.1', port: 3025, security: 'plain', user: 'alice@example.com', password: 'test-password' } };
 }

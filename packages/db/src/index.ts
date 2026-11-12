@@ -71,26 +71,35 @@ export class MailStore {
   deleteWebSession(tokenHash: string) { this.db.delete(schema.webSessions).where(eq(schema.webSessions.tokenHash, tokenHash)).run(); }
   accounts(): Account[] {
     return this.db.select({ id: schema.accounts.id, name: schema.accounts.name, email: schema.accounts.email,
-      lastSync: schema.accounts.lastSync, error: schema.accounts.error }).from(schema.accounts).all();
+      lastSync: schema.accounts.lastSync, error: schema.accounts.error,
+      receiveEnabled: schema.accounts.receiveEnabled, sendEnabled: schema.accounts.sendEnabled }).from(schema.accounts).orderBy(schema.accounts.sortOrder).all();
   }
   account(id: string) { return this.db.select().from(schema.accounts).where(eq(schema.accounts.id, id)).get(); }
-  addAccount(name: string, email: string, encryptedConfig: string) {
+  addAccount(name: string, email: string, encryptedConfig: string, channels = { receiveEnabled: true, sendEnabled: true }) {
     const id = randomUUID();
-    this.db.insert(schema.accounts).values({ id, name, email, encryptedConfig }).run();
+    const { position } = this.sqlite.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS position FROM accounts').get() as { position: number };
+    this.db.insert(schema.accounts).values({ id, name, email, encryptedConfig, sortOrder: position, receiveEnabled: channels.receiveEnabled, sendEnabled: channels.sendEnabled }).run();
     return id;
+  }
+  reorderAccounts(ids: string[]) {
+    this.sqlite.transaction(() => {
+      ids.forEach((id, sortOrder) => this.db.update(schema.accounts).set({ sortOrder }).where(eq(schema.accounts.id, id)).run());
+    })();
   }
   deleteAccount(id: string) { this.db.delete(schema.accounts).where(eq(schema.accounts.id, id)).run(); }
   updateAccountCredentials(id: string, encryptedConfig: string) {
     this.db.update(schema.accounts).set({ encryptedConfig }).where(eq(schema.accounts.id, id)).run();
   }
-  updateAccount(id: string, name: string, email: string, encryptedConfig: string, resetMailbox: boolean) {
+  updateAccount(id: string, name: string, email: string, encryptedConfig: string, resetMailbox: boolean, channels?: { receiveEnabled: boolean; sendEnabled: boolean }) {
     this.sqlite.transaction(() => {
       if (resetMailbox) {
         this.db.delete(schema.folders).where(eq(schema.folders.accountId, id)).run();
         this.db.delete(schema.messages).where(eq(schema.messages.accountId, id)).run();
         this.db.delete(schema.threadKeys).where(eq(schema.threadKeys.accountId, id)).run();
       }
-      this.db.update(schema.accounts).set({ name, email, encryptedConfig, error: null, ...(resetMailbox ? { lastSync: null } : {}) }).where(eq(schema.accounts.id, id)).run();
+      this.db.update(schema.accounts).set({ name, email, encryptedConfig, error: null,
+        ...(channels ? { receiveEnabled: channels.receiveEnabled, sendEnabled: channels.sendEnabled } : {}),
+        ...(resetMailbox ? { lastSync: null } : {}) }).where(eq(schema.accounts.id, id)).run();
     })();
   }
   upload(id: string) { return this.db.select().from(schema.uploads).where(eq(schema.uploads.id, id)).get(); }

@@ -125,10 +125,10 @@ it('hides saved passwords and proxy credentials, and preserves blank secrets dur
 it('does not replace a working account when validation of new credentials fails', async () => {
   await service.sync(accountId);
   const candidate = serverAdapter();
-  candidate.verifySmtp.mockRejectedValueOnce(new Error('bad SMTP credentials'));
+  candidate.connect.mockRejectedValueOnce(new Error('bad IMAP credentials'));
   factory.mockImplementationOnce(() => candidate);
   const before = store.account(accountId)!.encryptedConfig;
-  await expect(service.updateAccount(accountId, accountUpdateSchema.parse({ ...service.accountSettings(accountId), name: '失败设置' }))).rejects.toThrow('SMTP');
+  await expect(service.updateAccount(accountId, accountUpdateSchema.parse({ ...service.accountSettings(accountId), name: '失败设置' }))).rejects.toThrow('IMAP');
   expect(store.account(accountId)?.encryptedConfig).toBe(before);
   expect(store.message(messageId)).toBeDefined(); expect(candidate.close).toHaveBeenCalledOnce();
   expect(adapter.close).not.toHaveBeenCalled();
@@ -142,6 +142,43 @@ it('rebuilds mailbox mappings after changing IMAP identity while retaining local
   expect(store.message(messageId)).toBeUndefined();
   expect(service.getDraft(draft.id).subject).toBe('保留草稿');
   expect(store.folders(accountId).find(folder => folder.path === 'INBOX')?.id).not.toBe(inbox.id);
+});
+
+it('saves a receiving account without verifying SMTP', async () => {
+  const candidate = serverAdapter(); candidate.verifySmtp.mockRejectedValue(new Error('SMTP is unreachable'));
+  factory.mockImplementationOnce(() => candidate);
+  const id = await service.addAccount(accountConfig());
+  expect(store.account(id)).toMatchObject({ receiveEnabled: true, sendEnabled: true });
+  expect(candidate.verifySmtp).not.toHaveBeenCalled();
+});
+
+it('adds and sends from a send-only account without connecting to IMAP or syncing', async () => {
+  const candidate = serverAdapter(); candidate.connect.mockRejectedValue(new Error('IMAP is unreachable'));
+  factory.mockImplementationOnce(() => candidate);
+  const id = await service.addAccount({ ...accountConfig(), receiveEnabled: false });
+  await service.sync(id);
+  await service.send(sendSchema.parse({ accountId: id, to: ['bob@example.com'], subject: 'send only', text: 'test' }));
+  expect(candidate.verifySmtp).toHaveBeenCalledOnce(); expect(candidate.connect).not.toHaveBeenCalled();
+  expect(candidate.sync).not.toHaveBeenCalled(); expect(candidate.watchInbox).not.toHaveBeenCalled();
+  expect(candidate.send).toHaveBeenCalledOnce(); expect(store.folders(id)).toEqual([]);
+});
+
+it('rejects sending from a receive-only account before any SMTP operation', async () => {
+  const candidate = serverAdapter(); factory.mockImplementationOnce(() => candidate);
+  const id = await service.addAccount({ ...accountConfig(), sendEnabled: false });
+  await expect(service.send(sendSchema.parse({ accountId: id, to: ['bob@example.com'], subject: 'receive only', text: 'test' }))).rejects.toThrow('关闭发信');
+  expect(candidate.verifySmtp).not.toHaveBeenCalled(); expect(candidate.send).not.toHaveBeenCalled();
+});
+
+it('stops receiving after changing modes while keeping cached mail readable', async () => {
+  await service.body(messageId); await service.sync(accountId);
+  const candidate = serverAdapter(); factory.mockImplementationOnce(() => candidate);
+  await service.updateAccount(accountId, accountUpdateSchema.parse({ ...service.accountSettings(accountId), receiveEnabled: false }));
+  await service.sync(accountId);
+  expect(adapter.close).toHaveBeenCalledOnce(); expect(candidate.verifySmtp).toHaveBeenCalledOnce();
+  expect(candidate.connect).not.toHaveBeenCalled(); expect(candidate.sync).not.toHaveBeenCalled();
+  expect(store.message(messageId)).toBeDefined(); expect((await service.body(messageId)).text).toContain('缓存正文');
+  await expect(service.flags(messageId, { seen: true })).rejects.toThrow('关闭收信');
 });
 
 it('persists incomplete draft addresses and upload bytes, then removes only unreferenced files', async () => {

@@ -2,6 +2,10 @@ import { z } from 'zod';
 export { providerPresets, detectProvider } from './providers';
 export type { ProviderPreset } from './providers';
 
+export const accountOrderSchema = z.object({
+  accountIds: z.array(z.uuid()).min(1).max(1000).refine(ids => new Set(ids).size === ids.length, '邮箱顺序中不能出现重复账号'),
+});
+
 export const serverSchema = z.object({
   host: z.string().trim().min(1).max(253).regex(/^[^\s\x00-\x1f\x7f]+$/, '服务器地址不能包含空格或控制字符'),
   port: z.number().int().min(1).max(65535),
@@ -9,27 +13,43 @@ export const serverSchema = z.object({
   user: z.string().trim().min(1).max(320).regex(/^[^\x00-\x1f\x7f]+$/, '登录名不能包含控制字符'),
   password: z.string().min(1).max(4096),
 });
+const configurableServerSchema = serverSchema.extend({
+  host: serverSchema.shape.host.or(z.literal('')), user: serverSchema.shape.user.or(z.literal('')),
+  password: serverSchema.shape.password.or(z.literal('')),
+});
+const emptyImap = { host: '', port: 993, security: 'tls' as const, user: '', password: '' };
+const emptySmtp = { ...emptyImap, port: 465 };
 
 const accountFields = {
   name: z.string().trim().min(1).max(100),
   email: z.email(),
-  imap: serverSchema,
-  smtp: serverSchema,
+  receiveEnabled: z.boolean().default(true), sendEnabled: z.boolean().default(true),
+  imap: configurableServerSchema.default(emptyImap),
+  smtp: configurableServerSchema.default(emptySmtp),
   proxy: z.url().refine(value => ['http:', 'https:', 'socks5:'].includes(new URL(value).protocol), '仅支持 HTTP 或 SOCKS5 代理').optional(),
   sentCopy: z.enum(['append', 'server']).default('append'),
 };
-function validateTransportSecurity(account: { imap: { host: string; security: string }; smtp: { host: string; security: string } }, ctx: z.RefinementCtx) {
+function validateTransportSecurity(account: { receiveEnabled: boolean; sendEnabled: boolean; imap: { host: string; security: string; user: string }; smtp: { host: string; security: string; user: string } }, ctx: z.RefinementCtx) {
+  if (!account.receiveEnabled && !account.sendEnabled) ctx.addIssue({ code: 'custom', path: ['receiveEnabled'], message: '请至少开启收信或发信' });
   for (const protocol of ['imap', 'smtp'] as const) {
+    if (!(protocol === 'imap' ? account.receiveEnabled : account.sendEnabled)) continue;
     const server = account[protocol];
+    if (!server.host) ctx.addIssue({ code: 'custom', path: [protocol, 'host'], message: '请填写服务器地址' });
+    if (!server.user) ctx.addIssue({ code: 'custom', path: [protocol, 'user'], message: '请填写登录名' });
     if (server.security === 'plain' && !['localhost', '127.0.0.1', '::1'].includes(server.host)) {
       ctx.addIssue({ code: 'custom', path: [protocol, 'security'], message: '明文连接仅允许本机邮件桥接或测试服务器' });
     }
   }
 }
-export const accountSchema = z.object(accountFields).superRefine(validateTransportSecurity);
+export const accountSchema = z.object(accountFields).superRefine(validateTransportSecurity).superRefine((account, ctx) => {
+  for (const protocol of ['imap', 'smtp'] as const) {
+    if ((protocol === 'imap' ? account.receiveEnabled : account.sendEnabled) && !account[protocol].password)
+      ctx.addIssue({ code: 'custom', path: [protocol, 'password'], message: '请填写密码或授权码' });
+  }
+});
 export const accountUpdateSchema = z.object({ ...accountFields,
-  imap: serverSchema.extend({ password: serverSchema.shape.password.optional() }),
-  smtp: serverSchema.extend({ password: serverSchema.shape.password.optional() }),
+  imap: configurableServerSchema.extend({ password: serverSchema.shape.password.optional() }).default({ ...emptyImap, password: undefined }),
+  smtp: configurableServerSchema.extend({ password: serverSchema.shape.password.optional() }).default({ ...emptySmtp, password: undefined }),
   proxy: z.union([accountFields.proxy.unwrap(), z.literal('')]).optional(),
 }).superRefine(validateTransportSecurity);
 
@@ -37,7 +57,7 @@ export const oauthProviderSchema = z.enum(['google', 'microsoft']);
 export const oauthClientSchema = z.object({ clientId: z.string().trim().min(1).max(512), clientSecret: z.string().min(1).max(4096).optional() });
 export const oauthClientUpdateSchema = oauthClientSchema.nullable();
 export const oauthAccountSchema = z.object({ ...accountFields,
-  imap: serverSchema.omit({ password: true }), smtp: serverSchema.omit({ password: true }),
+  imap: configurableServerSchema.omit({ password: true }).default(emptyImap), smtp: configurableServerSchema.omit({ password: true }).default(emptySmtp),
   proxy: accountUpdateSchema.shape.proxy,
 }).superRefine(validateTransportSecurity);
 export const oauthStartSchema = z.object({
@@ -50,6 +70,7 @@ export const oauthStartSchema = z.object({
   const hosts = input.provider === 'google' ? { imap: ['imap.gmail.com'], smtp: ['smtp.gmail.com'] }
     : { imap: ['outlook.office365.com'], smtp: ['smtp.office365.com', 'smtp-mail.outlook.com'] };
   for (const protocol of ['imap', 'smtp'] as const) {
+    if (!(protocol === 'imap' ? input.account.receiveEnabled : input.account.sendEnabled)) continue;
     if (!hosts[protocol].includes(input.account[protocol].host.toLowerCase()) || input.account[protocol].security === 'plain')
       ctx.addIssue({ code: 'custom', path: ['account', protocol], message: 'OAuth 请使用该服务商的加密邮件服务器' });
     if (/[\x00-\x1f\x7f]/.test(input.account[protocol].user))
@@ -123,7 +144,7 @@ export type ListInput = z.infer<typeof listSchema>;
 export type FlagUpdate = z.infer<typeof flagsSchema>;
 export type FolderRole = 'inbox' | 'sent' | 'drafts' | 'trash' | 'junk' | 'archive' | 'other';
 export type Address = { name: string; address: string };
-export type Account = { id: string; name: string; email: string; lastSync: number | null; error: string | null };
+export type Account = { id: string; name: string; email: string; lastSync: number | null; error: string | null; receiveEnabled: boolean; sendEnabled: boolean };
 export type Cursor = { uidValidity: string; uidNext: number; modseq: string | null };
 export type Folder = Cursor & { id: string; accountId: string; path: string; name: string; role: FolderRole };
 export type MailMetadata = {
