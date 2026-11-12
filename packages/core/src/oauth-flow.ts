@@ -16,7 +16,7 @@ export class OAuthFlow {
     for (const session of this.sessions.values()) if (session.owner === owner) this.remove(session);
     const client = this.oauth.client(input);
     const old = input.accountId ? this.oauth.accountConfig(input.accountId) : undefined;
-    input = { ...input, account: { ...input.account, proxy: input.account.proxy === undefined ? old?.proxy : input.account.proxy || undefined } };
+    input = { ...input, account: { ...input.account, ...this.oauth.proxies.prepare(input.account, old) } };
     const id = randomUUID();
     const state = randomBytes(32).toString('base64url');
     const verifier = client.pkce ? randomBytes(32).toString('base64url') : undefined;
@@ -93,7 +93,7 @@ export class OAuthFlow {
       if (!code || url.searchParams.getAll('code').length !== 1) throw new Error('回调中没有有效授权码，请重新授权');
       const params = new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: session.redirectUri,
         ...(session.verifier ? { code_verifier: session.verifier } : {}) });
-      const token = await this.oauth.exchange(session.input.provider, session.client, params, session.input.account.proxy);
+      const token = await this.oauth.exchange(session.input.provider, session.client, params, this.oauth.proxies.resolve(session.input.account));
       if (!token.refreshToken) throw new Error('服务商没有返回离线访问令牌，请重新授权并同意离线访问');
       session.config = { ...session.input.account, proxy: session.input.account.proxy || undefined,
         oauth: { ...token, refreshToken: token.refreshToken, provider: session.input.provider, client: session.client } };

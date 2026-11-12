@@ -44,7 +44,7 @@ export function folderList(folders: Folder[]): { folder: Folder; label: string }
     .sort((a, b) => a.accountId.localeCompare(b.accountId) || roleOrder.indexOf(a.role) - roleOrder.indexOf(b.role) || a.name.localeCompare(b.name, 'zh-CN'))
     .map(folder => {
       const key = `${folder.accountId}:${folder.role}`;
-      const label = (!named.has(key) && roleLabels[folder.role]) || folder.name;
+      const label = (!named.has(key) && roleLabels[folder.role]) || (folder.path === folder.name ? folder.name : folder.path);
       named.add(key);
       return { folder, label };
     });

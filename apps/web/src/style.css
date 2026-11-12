@@ -116,7 +116,14 @@ legend{font-size:13px;padding:0 6px;color:var(--text-2)}
 /* Sidebar */
 .mail-app{display:flex;height:100dvh;overflow:hidden}
 .sidebar{width:240px;flex-shrink:0;background:var(--sidebar);border-right:1px solid var(--line);padding:20px 12px 12px;display:flex;flex-direction:column}
-.sidebar .brand{margin:0 8px 20px}
+.sidebar .brand{margin:0 8px 20px;gap:6px;flex-wrap:wrap}
+.app-version{font-size:12px;font-weight:500;letter-spacing:0;white-space:nowrap;color:var(--text-3)}
+.app-version:hover{color:var(--accent-strong);text-decoration:underline}
+.version-details{display:grid;gap:10px;margin:0 0 16px}
+.version-details>div{display:flex;justify-content:space-between;gap:16px}
+.version-details dt{color:var(--text-3)}
+.version-details dd{margin:0;text-align:right;overflow-wrap:anywhere}
+.update-result{margin:16px 0;padding:12px;border:1px solid var(--line);border-radius:8px;overflow-wrap:anywhere}
 .compose-button{width:100%;height:40px;margin-bottom:16px}
 .main-nav{display:flex;flex-direction:column;gap:2px}
 .main-nav button{display:flex;align-items:center;gap:11px;text-align:left;padding:9px 12px;color:var(--text-2);border-radius:7px}
@@ -131,6 +138,17 @@ legend{font-size:13px;padding:0 6px;color:var(--text-2)}
 .account-button{display:flex;align-items:center;gap:10px;padding:8px 12px;width:100%;border-radius:7px;text-align:left}
 .account-button:hover{background:var(--hover-strong)}
 .account-button.active{background:var(--accent-soft)}
+.account-header,.folder-row{display:flex;align-items:center;min-width:0}
+.account-header .account-button,.folder-row>button:first-child{flex:1;min-width:0}
+.mail-more{display:flex;align-items:center;justify-content:center;flex-shrink:0;padding:5px;border-radius:5px;color:var(--text-3)}
+.mail-more:hover{background:var(--hover-strong);color:var(--text)}
+.folder-list .mail-more{padding:5px}
+.mail-actions-overlay{position:fixed;inset:0;z-index:55}
+.mail-actions-menu{position:fixed;z-index:56;width:240px;background:var(--surface);border:1px solid var(--line-strong);box-shadow:0 12px 40px #0004;border-radius:8px;padding:6px;outline:none}
+.mail-actions-title{font-size:12px;font-weight:500;color:var(--text-3);margin:4px 8px 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mail-actions-account{font-size:12px;color:var(--text-3);margin:0 8px 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mail-actions-menu>button{display:flex;align-items:center;gap:10px;width:100%;padding:10px 8px;border-radius:5px;text-align:left;font-size:14px}
+.mail-actions-menu>button:hover{background:var(--hover-strong)}
 .account-chevron{flex-shrink:0;color:var(--text-3);transition:transform .15s}
 .account-button[aria-expanded="true"] .account-chevron{transform:rotate(90deg)}
 /* A square, so it is not mistaken for the round unread dot. */

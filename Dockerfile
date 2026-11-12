@@ -4,6 +4,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
     && rm -rf /var/lib/apt/lists/* \
     && corepack enable
 COPY . .
+ARG MAIL_BUILD_REVISION
+ENV MAIL_BUILD_REVISION=$MAIL_BUILD_REVISION
 RUN pnpm install --frozen-lockfile
 RUN pnpm build
 RUN pnpm --filter @mail/server deploy --prod --legacy /runtime

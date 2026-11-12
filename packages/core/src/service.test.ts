@@ -152,6 +152,21 @@ it('saves a receiving account without verifying SMTP', async () => {
   expect(candidate.verifySmtp).not.toHaveBeenCalled();
 });
 
+it('reconnects only inheriting accounts after a global proxy change', async () => {
+  const vault = new Vault(Buffer.alloc(32));
+  const customId = store.addAccount('独立代理', 'custom@example.com', vault.encrypt({ ...accountConfig(), email: 'custom@example.com', proxy: 'http://127.0.0.1:8001' }));
+  const independent = serverAdapter(); const replacement = serverAdapter();
+  factory.mockImplementationOnce(() => adapter).mockImplementationOnce(() => independent).mockImplementation(() => replacement);
+  await service.sync(accountId); await service.sync(customId);
+  const result = await service.setGlobalProxy('http://global:private@127.0.0.1:8002');
+  await service.sync(accountId);
+  expect(result.display).toBe('http://127.0.0.1:8002'); expect(JSON.stringify(result)).not.toContain('private');
+  expect(adapter.close).toHaveBeenCalled(); expect(independent.close).not.toHaveBeenCalled();
+  expect(factory.mock.calls.at(-1)![0].proxy).toBe('http://global:private@127.0.0.1:8002');
+  expect(service.accountSettings(accountId)).toMatchObject({ proxyMode: 'global', globalProxyDisplay: 'http://127.0.0.1:8002' });
+  expect(service.accountSettings(customId)).toMatchObject({ proxyMode: 'custom', proxyDisplay: 'http://127.0.0.1:8001' });
+});
+
 it('adds and sends from a send-only account without connecting to IMAP or syncing', async () => {
   const candidate = serverAdapter(); candidate.connect.mockRejectedValue(new Error('IMAP is unreachable'));
   factory.mockImplementationOnce(() => candidate);
@@ -282,6 +297,7 @@ function serverAdapter() {
     bodyText: vi.fn(async () => '后台索引正文'),
     copyRecipients: vi.fn(async () => []),
     flags: vi.fn(async () => {}), move: vi.fn(async (): Promise<MoveReceipt> => ({ uid: 10, uidValidity: '1' })),
+    markAllRead: vi.fn<MailAdapter['markAllRead']>(async () => ({ uidValidity: '1', uidNext: 2 })), createFolder: vi.fn<MailAdapter['createFolder']>(async name => name),
     send: vi.fn<MailAdapter['send']>(async () => ({ messageId: '<sent>' })),
     watchInbox: vi.fn(async (onChange: () => void) => { notify = onChange; return stopWatch; }), stopWatch,
   };

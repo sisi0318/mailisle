@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { OAuthClientInfo, OAuthClientSettings, OAuthProgress, OAuthProvider, OAuthStarted } from '@mail/shared';
+import type { GlobalProxySettings, OAuthClientInfo, OAuthClientSettings, OAuthProgress, OAuthProvider, OAuthStarted } from '@mail/shared';
 import { api, json } from '../api';
 import { Button, Modal } from './ui';
 
@@ -57,8 +57,12 @@ export function OAuthAuthorization({ session, onSaved, onCancel, onBusy }: { ses
   </div>;
 }
 
-export function OAuthSettings({ onClose }: { onClose: () => void }) {
+export function GlobalSettings({ onClose, onUpdates }: { onClose: () => void; onUpdates: () => void }) {
   const query = useQueryClient();
+  const proxy = useQuery({ queryKey: ['global-proxy'], queryFn: () => api<GlobalProxySettings>('/settings/proxy') });
+  const [proxyInput, setProxyInput] = useState('');
+  const saveProxy = useMutation({ mutationFn: (value: string | null) => api<GlobalProxySettings>('/settings/proxy', json('PUT', { proxy: value })),
+    onSuccess: data => { query.setQueryData(['global-proxy'], data); setProxyInput(''); setSaved(data.configured ? '全局代理已保存。' : '全局代理已清除。'); } });
   const clients = useQuery({ queryKey: ['oauth-clients'], queryFn: () => api<OAuthClientSettings>('/oauth/clients') });
   const [saved, setSaved] = useState('');
   const save = useMutation({ mutationFn: ({ provider, data }: { provider: OAuthProvider; data: { clientId: string; clientSecret?: string } | null }) => api<OAuthClientSettings>(`/oauth/clients/${provider}`, json('PUT', data)),
@@ -67,7 +71,19 @@ export function OAuthSettings({ onClose }: { onClose: () => void }) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
     save.mutate({ provider, data: { clientId: String(form.get('clientId') ?? '').trim(), clientSecret: String(form.get('clientSecret') ?? '') || undefined } });
   }
-  return <Modal title="OAuth 客户端设置" description="按服务商设置默认客户端。也可以在连接邮箱时单独覆盖。" onClose={() => { if (!save.isPending) onClose(); }}>
+  return <Modal title="全局设置" description="设置默认代理和邮箱授权应用。" onClose={() => { if (!save.isPending && !saveProxy.isPending) onClose(); }}>
+    <form className="oauth-settings-form" onSubmit={event => { event.preventDefault(); saveProxy.mutate(proxyInput.trim()); }}>
+      <h3>网络代理</h3>
+      <fieldset className="form-fields" disabled={saveProxy.isPending}>
+        <p className="hint">{proxy.isPending ? '正在读取…' : proxy.error ? proxy.error.message : proxy.data?.display ? `当前代理：${proxy.data.display}` : '未设置，默认直接连接。'}</p>
+        <label>全局代理地址<input value={proxyInput} onChange={event => setProxyInput(event.target.value)} placeholder="HTTP 或 SOCKS5 代理地址" autoComplete="off" /></label>
+        <p className="hint">用于继承全局的邮箱、邮箱授权及更新检查。独立代理和直连邮箱不受影响。</p>
+        <div className="form-footer"><Button type="button" disabled={!proxy.data?.configured} onClick={() => saveProxy.mutate(null)}>清除代理</Button>
+          <Button type="submit" variant="primary" disabled={!proxyInput.trim()}>{saveProxy.isPending ? '正在应用…' : '保存代理'}</Button></div>
+      </fieldset>
+      {saveProxy.error && <p className="error" role="alert">{saveProxy.error.message}</p>}
+    </form>
+    <p className="hint">以下授权应用可按邮箱单独覆盖。</p>
     {!clients.data ? <p>{clients.error?.message ?? '正在读取…'}</p> : (['google', 'microsoft'] as const).map(provider => <form className="oauth-settings-form" key={`${provider}:${clients.data[provider].custom?.clientId ?? ''}`} onSubmit={event => submit(event, provider)}>
       <h3>{provider === 'google' ? 'Google' : 'Microsoft'}</h3>
       <fieldset className="form-fields" disabled={save.isPending}>
@@ -79,5 +95,6 @@ export function OAuthSettings({ onClose }: { onClose: () => void }) {
       </fieldset>
     </form>)}
     {save.error && <p className="error" role="alert">{save.error.message}</p>}{saved && <p role="status">{saved}</p>}
+    <div className="form-footer"><Button disabled={save.isPending || saveProxy.isPending} onClick={onUpdates}>版本与更新</Button></div>
   </Modal>;
 }

@@ -10,6 +10,7 @@ import { MessageList } from './components/MessageList';
 import { Reader, ReaderEmpty } from './components/Reader';
 import { Sidebar, type Filter } from './components/Sidebar';
 import { DraftList } from './components/DraftList';
+import type { MailActionTarget } from './components/MailActions';
 import * as Dialog from '@radix-ui/react-dialog';
 
 type FlagPatch = { seen?: boolean; starred?: boolean };
@@ -17,7 +18,10 @@ type Notice = { text: string; kind: 'success' | 'error' };
 const Composer = lazy(() => import('./components/Composer').then(module => ({ default: module.Composer })));
 const AccountForm = lazy(() => import('./components/AccountForm').then(module => ({ default: module.AccountForm })));
 const AccountManager = lazy(() => import('./components/AccountManager').then(module => ({ default: module.AccountManager })));
-const OAuthSettings = lazy(() => import('./components/OAuth').then(module => ({ default: module.OAuthSettings })));
+const GlobalSettings = lazy(() => import('./components/OAuth').then(module => ({ default: module.GlobalSettings })));
+const VersionDialog = lazy(() => import('./components/VersionDialog').then(module => ({ default: module.VersionDialog })));
+const MailActions = lazy(() => import('./components/MailActions').then(module => ({ default: module.MailActions })));
+const CreateFolderDialog = lazy(() => import('./components/MailActions').then(module => ({ default: module.CreateFolderDialog })));
 const pageTitle = document.title;
 
 export default function App() {
@@ -69,7 +73,10 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
   const [accountManager, setAccountManager] = useState(false);
   const [composer, setComposer] = useState<{ draft?: Draft; accountId?: string; fresh?: boolean } | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
-  const [oauthSettings, setOAuthSettings] = useState(false);
+  const [globalSettings, setGlobalSettings] = useState(false);
+  const [versionDialog, setVersionDialog] = useState(false);
+  const [mailActions, setMailActions] = useState<MailActionTarget | null>(null);
+  const [creatingFolder, setCreatingFolder] = useState<MailActionTarget | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [syncing, setSyncing] = useState<Set<string>>(new Set());
   const [connected, setConnected] = useState(false);
@@ -146,6 +153,7 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     const updateMessage = (event: Event) => {
       lastEvent = Date.now();
       const update = JSON.parse((event as MessageEvent<string>).data) as SyncEvent;
+      if (update.type === 'settings') { refresh(['global-proxy', 'oauth-clients']); return; }
       if (update.messageId) void query.invalidateQueries({ queryKey: ['body', update.messageId] });
       if (update.state) setSyncing(current => {
         const next = new Set(current);
@@ -289,7 +297,9 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     onManageAccounts: () => { setMobileNav(false); setAccountManager(true); },
     onCompose: () => { setMobileNav(false); setComposer({ accountId: filter.accountId }); },
     onAddAccount: () => { setMobileNav(false); setAccountForm({}); },
-    onOAuthSettings: () => { setMobileNav(false); setOAuthSettings(true); },
+    onGlobalSettings: () => { setMobileNav(false); setGlobalSettings(true); },
+    onVersion: () => { setMobileNav(false); setVersionDialog(true); },
+    onActions: setMailActions,
     onLogout };
   const reading = !isDrafts && !!selectedMessage;
 
@@ -337,7 +347,15 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
         else if (expandedAccountId === id) setExpandedAccountId(undefined);
       }} /></Suspense>}
     {accountForm && <Suspense fallback={null}><AccountForm accountId={accountForm.id} onClose={() => setAccountForm(null)} onSaved={id => navigate({ view: 'inbox', accountId: id })} /></Suspense>}
-    {oauthSettings && <Suspense fallback={null}><OAuthSettings onClose={() => setOAuthSettings(false)} /></Suspense>}
+    {globalSettings && <Suspense fallback={null}><GlobalSettings onClose={() => setGlobalSettings(false)} onUpdates={() => { setGlobalSettings(false); setVersionDialog(true); }} /></Suspense>}
+    {versionDialog && <Suspense fallback={null}><VersionDialog onClose={() => setVersionDialog(false)} /></Suspense>}
+    {mailActions && <Suspense fallback={null}><MailActions target={mailActions} onClose={() => setMailActions(null)} onCreate={() => { setMobileNav(false); setCreatingFolder(mailActions); setMailActions(null); }}
+      onResult={(text, error) => setNotice({ text, kind: error ? 'error' : 'success' })} /></Suspense>}
+    {creatingFolder && <Suspense fallback={null}><CreateFolderDialog account={creatingFolder.account} parent={creatingFolder.folder} onClose={() => setCreatingFolder(null)} onCreated={folder => {
+      setCreatingFolder(null); void query.invalidateQueries({ queryKey: ['folders'] });
+      if (folder) navigate({ view: 'all', accountId: folder.accountId, folderId: folder.id });
+      setNotice({ text: '文件夹已创建', kind: 'success' });
+    }} /></Suspense>}
     {composer && <Suspense fallback={null}><Composer key={composer.draft?.id ?? 'new'} accounts={accountList} draft={composer.draft} accountId={composer.accountId} fresh={composer.fresh} onClose={() => setComposer(null)}
       onSent={(text, needsAttention) => setNotice({ text, kind: needsAttention ? 'error' : 'success' })} /></Suspense>}
   </div>;

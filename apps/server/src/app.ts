@@ -11,16 +11,18 @@ import { bodyLimit } from 'hono/body-limit';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { accountSchema, accountUpdateSchema, composeSchema, discoverySchema, draftSchema, flagsSchema, listSchema, loginSchema, MAX_ATTACHMENT_BYTES, moveSchema, sendSchema, type SyncEvent } from '@mail/shared';
 import { discoverAccount, errorStatus, publicError, UserError, verifyPassword, type MailService } from '@mail/core';
-import { accountOrderSchema, oauthStartSchema, oauthProviderSchema, oauthClientUpdateSchema, oauthCallbackSchema } from '@mail/shared';
+import { accountOrderSchema, createFolderSchema, globalProxySchema, oauthStartSchema, oauthProviderSchema, oauthClientUpdateSchema, oauthCallbackSchema } from '@mail/shared';
 import { createAccessPolicy } from './access';
 import { SESSION_SECONDS, WebSessions } from './sessions';
 import { clientKey, LoginLimiter } from './login-limit';
+import { UpdateChecker } from './updates';
 
 const PUBLIC_PATHS = ['/api/session', '/api/login'];
 
-type Options = { service: MailService; passwordHash: string; port: number; webRoot?: string; docsRoot?: string; dev?: boolean; publicUrl?: string; https?: boolean };
+type Options = { service: MailService; passwordHash: string; port: number; webRoot?: string; docsRoot?: string; dev?: boolean; publicUrl?: string; https?: boolean; updates?: UpdateChecker };
 
-export function createApp({ service, passwordHash, port, webRoot, docsRoot = resolve('docs'), dev = false, publicUrl, https = false }: Options) {
+export function createApp({ service, passwordHash, port, webRoot, docsRoot = resolve('docs'), dev = false, publicUrl, https = false,
+  updates = new UpdateChecker(undefined, undefined, () => service.oauth.proxies.globalUrl()) }: Options) {
   const app = new Hono<{ Variables: { secureCookie: boolean } }>();
   const sessions = new WebSessions(service.store);
   const sessionEvents = new EventEmitter();
@@ -79,6 +81,14 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     return c.json({ ok: true });
   });
   app.get('/api/accounts', c => c.json(service.store.accounts()));
+  app.get('/api/version', c => c.json(updates.current));
+  app.post('/api/updates/check', async c => c.json(await updates.check()));
+  app.get('/api/settings/proxy', c => c.json(service.oauth.proxies.settings()));
+  app.put('/api/settings/proxy', async c => {
+    const parsed = globalProxySchema.safeParse(await readJson(c));
+    if (!parsed.success) return c.json({ error: '请填写有效的 HTTP 或 SOCKS5 代理地址' }, 400);
+    return c.json(await service.setGlobalProxy(parsed.data.proxy));
+  });
   app.put('/api/accounts/order', async c => {
     const parsed = accountOrderSchema.safeParse(await readJson(c));
     if (!parsed.success) return c.json({ error: '邮箱顺序不正确，请刷新后重试' }, 400);
@@ -91,6 +101,7 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     const input = oauthClientUpdateSchema.safeParse(await readJson(c));
     if (!provider.success || !input.success) return c.json({ error: 'OAuth 客户端设置不正确' }, 400);
     service.oauth.setClient(provider.data, input.data);
+    service.events.emit('update', { type: 'settings' } satisfies SyncEvent);
     return c.json(service.oauth.settings());
   });
   app.get('/api/oauth/docs/:provider', async c => {
@@ -193,6 +204,22 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     if (!service.store.account(c.req.param('id'))) return c.json({ error: '账号不存在' }, 404);
     void service.sync(c.req.param('id'));
     return c.json({ ok: true }, 202);
+  });
+  app.post('/api/accounts/:id/read-all', async c => {
+    await service.markAllRead(c.req.param('id'));
+    return c.json({ ok: true });
+  });
+  app.post('/api/folders/:id/read-all', async c => {
+    const folder = service.store.folder(c.req.param('id'));
+    if (!folder) return c.json({ error: '文件夹不存在' }, 404);
+    await service.markAllRead(folder.accountId, folder.id);
+    return c.json({ ok: true });
+  });
+  app.post('/api/accounts/:id/folders', async c => {
+    const parsed = createFolderSchema.safeParse(await readJson(c));
+    if (!parsed.success) return c.json({ error: '请输入有效的文件夹名称' }, 400);
+    const folder = await service.createFolder(c.req.param('id'), parsed.data.name, parsed.data.parentId);
+    return c.json({ folder }, 201);
   });
   app.get('/api/folders', c => c.json(service.store.folders()));
   app.get('/api/messages', c => {

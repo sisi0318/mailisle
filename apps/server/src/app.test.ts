@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { BodyCache, hashPassword, MailService, UploadStore, Vault } from '@mail/core';
 import { MAX_ATTACHMENT_BYTES } from '@mail/shared';
 import { createApp } from './app';
+import { UpdateChecker } from './updates';
 import { accountConfig, database, record, seedAccount } from '../../../tests/fixtures';
 
 describe('HTTP authentication and local data', () => {
@@ -34,6 +35,28 @@ describe('HTTP authentication and local data', () => {
     expect((await request('/accounts', 'GET', undefined, cookie)).status).toBe(200);
     await request('/logout', 'POST', {}, cookie);
     expect((await request('/accounts', 'GET', undefined, cookie)).status).toBe(401);
+  });
+  it('keeps global proxy credentials encrypted and exposes only a redacted address', async () => {
+    expect((await request('/settings/proxy', 'PUT', { proxy: 'http://127.0.0.1:7890' })).status).toBe(401);
+    const cookie = await login();
+    const changed = await request('/settings/proxy', 'PUT', { proxy: 'http://proxy-user:proxy-secret@127.0.0.1:7890' }, cookie);
+    expect(changed.status).toBe(200); expect(await changed.json()).toEqual({ configured: true, display: 'http://127.0.0.1:7890' });
+    expect(store.getSetting('global-proxy')).not.toContain('proxy-secret');
+    expect(await (await request('/settings/proxy', 'GET', undefined, cookie)).text()).not.toContain('proxy-secret');
+    expect((await request('/settings/proxy', 'PUT', { proxy: 'file:///tmp/secret' }, cookie)).status).toBe(400);
+    const cleared = await request('/settings/proxy', 'PUT', { proxy: null }, cookie);
+    expect(await cleared.json()).toEqual({ configured: false });
+  });
+  it('checks updates only after login and returns the recorded build identity', async () => {
+    const build = { version: '0.1.0', revision: 'a'.repeat(40), localChanges: false, builtAt: '2026-11-12T00:00:00.000Z' };
+    let calls = 0;
+    const updates = new UpdateChecker(build, async () => { calls++; return { sha: build.revision, commit: { message: 'current', committer: { date: build.builtAt } } }; });
+    app = createApp({ service, passwordHash: await hashPassword('test-login-password'), port: 3000, updates });
+    expect((await request('/version')).status).toBe(401);
+    expect((await request('/updates/check', 'POST', {})).status).toBe(401); expect(calls).toBe(0);
+    const cookie = await login();
+    expect(await (await request('/version', 'GET', undefined, cookie)).json()).toEqual(build);
+    expect((await (await request('/updates/check', 'POST', {}, cookie)).json()).status).toBe('current'); expect(calls).toBe(1);
   });
   it('blocks rebinding hosts, cross-site origins and missing origins', async () => {
     expect((await request('/session', 'GET', undefined, undefined, { host: 'attacker.example:3000' })).status).toBe(403);

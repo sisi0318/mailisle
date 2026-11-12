@@ -4,7 +4,7 @@ import { accountSchema, accountUpdateSchema, detectProvider, providerPresets, ty
 import { api, json } from '../api';
 import { describeIssues } from '../format';
 import { Button, Modal } from './ui';
-import { oauthStartSchema, type OAuthStarted, type OAuthStart, type OAuthClientSettings } from '@mail/shared';
+import { oauthStartSchema, type OAuthStarted, type OAuthStart, type OAuthClientSettings, type GlobalProxySettings, type ProxyMode } from '@mail/shared';
 import { OAuthAuthorization, OAuthClientFields } from './OAuth';
 
 const labels = {
@@ -30,7 +30,8 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
   const [serversOpen, setServersOpen] = useState<boolean | null>(settings ? true : null);
   const [discovered, setDiscovered] = useState<AutoConfig | null>(null);
   const [discoveryVersion, setDiscoveryVersion] = useState(0);
-  const [clearProxy, setClearProxy] = useState(false);
+  const [proxyMode, setProxyMode] = useState<ProxyMode>(settings?.proxyMode ?? (settings?.proxyDisplay ? 'custom' : 'global'));
+  const globalProxy = useQuery({ queryKey: ['global-proxy'], queryFn: () => api<GlobalProxySettings>('/settings/proxy') });
   const [receiveEnabled, setReceiveEnabled] = useState(settings?.receiveEnabled ?? true);
   const [sendEnabled, setSendEnabled] = useState(settings?.sendEnabled ?? true);
   const [authMode, setAuthMode] = useState(settings?.oauth ? 'oauth' : settings ? 'password' : 'auto');
@@ -66,7 +67,7 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
     const server = (protocol: 'imap' | 'smtp') => ({ host: value(`${protocol}Host`), port: Number(value(`${protocol}Port`)), security: value(`${protocol}Security`),
       user: value(`${protocol}User`) || value('email'), password: String(form.get(`${protocol}Password`) || password) || (accountId ? undefined : '') });
     const account = { name: value('name') || preset?.name || value('email'), email: value('email'), receiveEnabled, sendEnabled,
-      imap: server('imap'), smtp: server('smtp'), proxy: clearProxy ? '' : value('proxy') || undefined, sentCopy: value('sentCopy') };
+      imap: server('imap'), smtp: server('smtp'), proxyMode, proxy: proxyMode === 'custom' ? value('proxy') || undefined : undefined, sentCopy: value('sentCopy') };
     const onlySave = settingsOnly.current;
     settingsOnly.current = false;
     if (useOAuth && oauthProvider && !onlySave) {
@@ -82,9 +83,13 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
   }
   const presetKey = `${providerId}:${preset?.name ?? ''}:${providerId === 'discovered' ? discoveryVersion : 0}`;
   const proxyFields = <>
-    <label>代理（选填）<input name="proxy" disabled={clearProxy} placeholder={settings?.proxyDisplay ? `留空保留现有代理 ${settings.proxyDisplay}` : 'socks5://127.0.0.1:1080 或 http://127.0.0.1:7890'} />
-      {oauthProvider && <span className="hint">主机无法直连 {oauthProvider === 'google' ? 'Google' : 'Microsoft'} 时填写，收发信和换取令牌都会走它。授权页由浏览器打开，浏览器也要能访问。</span>}</label>
-    {settings?.proxyDisplay && <label className="checkbox-label"><input type="checkbox" checked={clearProxy} onChange={event => setClearProxy(event.target.checked)} />移除现有代理</label>}
+    <label>代理方式<select value={proxyMode} onChange={event => setProxyMode(event.target.value as ProxyMode)}>
+      <option value="global">继承全局设置</option><option value="custom">独立代理</option><option value="direct">不使用代理</option>
+    </select></label>
+    {proxyMode === 'global' && <p className="hint">{globalProxy.isPending ? '正在读取全局代理…' : globalProxy.error ? globalProxy.error.message
+      : globalProxy.data?.display ? `当前全局代理：${globalProxy.data.display}` : '全局未设置代理，将直接连接。'}</p>}
+    <label style={proxyMode !== 'custom' ? { display: 'none' } : undefined}>独立代理地址<input name="proxy" placeholder={settings?.proxyDisplay ? `留空保留 ${settings.proxyDisplay}` : 'http://127.0.0.1:7890 或 socks5://127.0.0.1:1080'} /></label>
+    {oauthProvider && <p className="hint">收发信和换取令牌使用此代理。授权页由浏览器打开，浏览器的代理需自行设置。</p>}
   </>;
   return <Modal title={accountId ? '邮箱设置' : '连接邮箱'} description={accountId ? '更换收信服务器或登录名会重新同步本地邮件索引，草稿保留。' : '通过 IMAP 和 SMTP 连接，邮件保存在运行信屿的主机上。'} onClose={() => { if (!save.isPending && !start.isPending && !authorizing) onClose(); }} wide>
     {authorization && <OAuthAuthorization session={authorization} onSaved={saved} onBusy={setAuthorizing} onCancel={() => { setAuthorization(null); start.reset(); }} />}

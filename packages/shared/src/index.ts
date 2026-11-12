@@ -19,6 +19,10 @@ const configurableServerSchema = serverSchema.extend({
 });
 const emptyImap = { host: '', port: 993, security: 'tls' as const, user: '', password: '' };
 const emptySmtp = { ...emptyImap, port: 465 };
+export const proxyAddressSchema = z.url().refine(value => ['http:', 'https:', 'socks5:'].includes(new URL(value).protocol), '仅支持 HTTP 或 SOCKS5 代理');
+export const globalProxySchema = z.object({ proxy: proxyAddressSchema.nullable() });
+export type ProxyMode = 'global' | 'custom' | 'direct';
+export type GlobalProxySettings = { configured: boolean; display?: string };
 
 const accountFields = {
   name: z.string().trim().min(1).max(100),
@@ -26,7 +30,8 @@ const accountFields = {
   receiveEnabled: z.boolean().default(true), sendEnabled: z.boolean().default(true),
   imap: configurableServerSchema.default(emptyImap),
   smtp: configurableServerSchema.default(emptySmtp),
-  proxy: z.url().refine(value => ['http:', 'https:', 'socks5:'].includes(new URL(value).protocol), '仅支持 HTTP 或 SOCKS5 代理').optional(),
+  proxy: proxyAddressSchema.optional(),
+  proxyMode: z.enum(['global', 'custom', 'direct']).optional(),
   sentCopy: z.enum(['append', 'server']).default('append'),
 };
 function validateTransportSecurity(account: { receiveEnabled: boolean; sendEnabled: boolean; imap: { host: string; security: string; user: string }; smtp: { host: string; security: string; user: string } }, ctx: z.RefinementCtx) {
@@ -91,6 +96,10 @@ export type OAuthStarted = OAuthProgress & { authorizationUrl: string; redirectU
 export const loginSchema = z.object({ password: z.string().min(12, '密码至少 12 个字符').max(1024) });
 export const flagsSchema = z.object({ seen: z.boolean().optional(), starred: z.boolean().optional() });
 export const moveSchema = z.object({ folderId: z.string().min(1) });
+export const createFolderSchema = z.object({
+  name: z.string().trim().min(1).max(255).regex(/^[^\x00-\x1f\x7f]+$/, '文件夹名称不能包含控制字符'),
+  parentId: z.uuid().optional(),
+});
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_ATTACHMENTS = 20;
 export const uploadMetadataSchema = z.object({
@@ -130,6 +139,7 @@ export type AccountInput = z.infer<typeof accountSchema>;
 export type AccountUpdate = z.infer<typeof accountUpdateSchema>;
 export type AccountSettings = Omit<AccountInput, 'imap' | 'smtp' | 'proxy'> & {
   imap: Omit<AccountInput['imap'], 'password'>; smtp: Omit<AccountInput['smtp'], 'password'>; proxyDisplay?: string;
+  globalProxyDisplay?: string;
   oauth?: { provider: OAuthProvider; client: OAuthClientInfo };
 };
 export type SendInput = z.infer<typeof sendSchema>;
@@ -175,4 +185,12 @@ export type Attachment = { id: string; filename: string; mimeType: string; size:
 export type InlineImage = { attachmentId: string; contentId: string; dataUrl: string };
 export type MessageBody = { text: string; html: string | null; attachments: Attachment[]; inlineImages?: InlineImage[]; cc?: Address[] };
 export type MessagePage = { messages: Message[]; total: number; nextOffset: number | null };
-export type SyncEvent = { type: 'sync' | 'change' | 'draft'; accountId: string; messageId?: string; contentOnly?: boolean; state?: 'running' | 'idle' | 'error'; error?: string };
+export type SyncEvent = { type: 'settings' } | { type: 'sync' | 'change' | 'draft'; accountId: string; messageId?: string; contentOnly?: boolean; state?: 'running' | 'idle' | 'error'; error?: string };
+export type BuildInfo = { version: string; revision: string | null; localChanges: boolean | null; builtAt: string };
+export type UpdateCheck = {
+  status: 'available' | 'current' | 'local-ahead' | 'diverged' | 'unknown';
+  current: BuildInfo;
+  latest: { revision: string; title: string; date: string; url: string };
+  checkedAt: string;
+};
+export const PROJECT_URL = 'https://github.com/sisi0318/mailisle';

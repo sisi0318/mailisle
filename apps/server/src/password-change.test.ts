@@ -20,6 +20,7 @@ beforeEach(async () => {
   store.setSetting('vault-salt', 'old-vault-salt'); store.setSetting('vault-check', oldVault.encrypt('mail-v1'));
   store.setSetting('password-hash', await hashPassword(oldPassword));
   store.setSetting('oauth-client-google', oldVault.encrypt({ clientId: 'own-client', clientSecret: 'test-only-secret' }));
+  store.setSetting('global-proxy', oldVault.encrypt('http://proxy-user:proxy-secret@127.0.0.1:7890'));
   accountId = store.addAccount('Test', accountConfig().email, oldVault.encrypt(accountConfig()));
   store.saveFolders(accountId, [{ path: 'INBOX', name: 'INBOX', role: 'inbox' }]);
   const folder = store.folders(accountId)[0]; store.beginFolder(folder.id, '1'); store.applyBatch(store.folders(accountId)[0], [record()]);
@@ -40,6 +41,7 @@ it('rewraps credentials and client secrets, preserves mail and drafts, and inval
     const vault = new Vault(await deriveKey(newPassword, store.getSetting('vault-salt')!));
     expect(vault.decrypt(store.account(accountId)!.encryptedConfig)).toEqual(accountConfig());
     expect(vault.decrypt(store.getSetting('oauth-client-google')!)).toEqual({ clientId: 'own-client', clientSecret: 'test-only-secret' });
+    expect(vault.decrypt(store.getSetting('global-proxy')!)).toBe('http://proxy-user:proxy-secret@127.0.0.1:7890');
     expect(await verifyPassword(newPassword, store.getSetting('password-hash')!)).toBe(true);
     expect(() => oldVault.decrypt(store.account(accountId)!.encryptedConfig)).toThrow();
     expect(store.sqlite.prepare('SELECT * FROM messages').all()).toEqual(original);

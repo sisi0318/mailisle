@@ -146,6 +146,29 @@ export class ImapAdapter implements MailAdapter {
     }
     finally { lock.release(); }
   }
+  async markAllRead(folder: Folder) {
+    const lock = await this.client.getMailboxLock(folder.path);
+    try {
+      const mailbox = this.client.mailbox;
+      if (!mailbox) throw new Error('无法打开文件夹');
+      const uidValidity = mailbox.uidValidity.toString();
+      if (folder.uidValidity && folder.uidValidity !== uidValidity) throw new Error('文件夹已在服务器重建，请同步后重试');
+      const uidNext = mailbox.uidNext;
+      if (mailbox.exists && !await this.client.messageFlagsAdd('1:*', ['\\Seen'], { uid: true })) throw new Error('服务器未接受全部已读操作');
+      return { uidValidity, uidNext };
+    } finally { lock.release(); }
+  }
+  async createFolder(name: string, parent?: Folder) {
+    const folders = await this.client.list();
+    const location = parent ? folders.find(folder => folder.path === parent.path) : folders.find(folder => folder.path.toUpperCase() === 'INBOX');
+    if (parent && !location) throw new Error('上级文件夹已不存在，请同步后重试');
+    const delimiter = location?.delimiter;
+    if (parent && (!delimiter || [...(location?.flags ?? [])].some(flag => flag.toLowerCase() === '\\noinferiors'))) throw new Error('此文件夹不支持创建子文件夹');
+    if (delimiter && name.includes(delimiter)) throw new Error(`文件夹名称不能包含层级分隔符“${delimiter}”`);
+    const result = await this.client.mailboxCreate(parent ? [parent.path, name] : [name]);
+    if (!result?.created) throw new Error('同名文件夹已存在');
+    return result.path;
+  }
   async send(input: SendInput, sentPath?: string, attachments: OutgoingAttachment[] = []) {
     const message = new MailComposer({
       from: { name: this.account.name, address: this.account.email }, to: input.to, cc: input.cc,

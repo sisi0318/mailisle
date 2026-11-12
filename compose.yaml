@@ -1,6 +1,9 @@
 services:
   mailisle:
-    build: .
+    build:
+      context: .
+      args:
+        MAIL_BUILD_REVISION: ${MAIL_BUILD_REVISION:-}
     restart: unless-stopped
     env_file: .env
     environment:

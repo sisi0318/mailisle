@@ -26,7 +26,7 @@ export async function changeMasterPassword(envFile: string, migrationsDir: strin
     const newSalt = randomBytes(32).toString('hex');
     const newVault = new Vault(await deriveKey(newPassword, newSalt));
     const accountValues = store.accounts().map(account => ({ id: account.id, encrypted: newVault.encrypt(oldVault.decrypt(store.account(account.id)!.encryptedConfig)) }));
-    const clientValues = ['oauth-client-google', 'oauth-client-microsoft'].flatMap(key => {
+    const clientValues = ['oauth-client-google', 'oauth-client-microsoft', 'global-proxy'].flatMap(key => {
       const encrypted = store.getSetting(key);
       return encrypted ? [{ key, encrypted: newVault.encrypt(oldVault.decrypt(encrypted)) }] : [];
     });

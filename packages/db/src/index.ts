@@ -220,6 +220,11 @@ export class MailStore {
     }
     this.applyFlags(folderId, [{ uid, flags: [...flags] }]);
   }
+  markFolderRead(folderId: string, uidNext: number) {
+    return this.sqlite.prepare(`UPDATE locations SET flags = json_insert(flags, '$[#]', ?)
+      WHERE folder_id = ? AND uid < ? AND NOT EXISTS (SELECT 1 FROM json_each(locations.flags) WHERE value = ?)`)
+      .run('\\Seen', folderId, uidNext, '\\Seen').changes;
+  }
   moveLocation(folderId: string, uid: number, target: Folder, receipt: MoveReceipt): boolean {
     return this.sqlite.transaction(() => {
       const location = this.db.select().from(schema.locations).where(and(eq(schema.locations.folderId, folderId), eq(schema.locations.uid, uid))).get();

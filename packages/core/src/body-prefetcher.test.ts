@@ -25,7 +25,7 @@ beforeEach(async () => {
   close = vi.fn(async () => {});
   source = vi.fn();
   create = vi.fn(() => ({ connect: vi.fn(async () => {}), close, bodyText: text, source, copyRecipients: vi.fn(),
-    verifySmtp: vi.fn(), listFolders: vi.fn(), sync: vi.fn(), flags: vi.fn(), move: vi.fn(), send: vi.fn(), watchInbox: vi.fn(),
+    verifySmtp: vi.fn(), listFolders: vi.fn(), sync: vi.fn(), flags: vi.fn(), markAllRead: vi.fn(), createFolder: vi.fn(), move: vi.fn(), send: vi.fn(), watchInbox: vi.fn(),
   }));
   events = { change: vi.fn(), error: vi.fn() };
   worker = new BodyPrefetcher(store, new BodyCache(directory), create, events);

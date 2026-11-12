@@ -168,7 +168,7 @@ it('validates and adopts OAuth accounts through MailService and keeps folder ide
   } finally { await service.stop(); await mail.close(); }
 });
 
-it('routes token exchange and refresh through the account HTTP proxy, including proxy authentication', async () => {
+it.each(['custom', 'global'] as const)('routes token exchange and refresh through the %s HTTP proxy, including proxy authentication', async mode => {
   const received: { url: string; authorization?: string }[] = [];
   const proxy = createServer((incoming, outgoing) => {
     received.push({ url: incoming.url!, authorization: incoming.headers['proxy-authorization'] });
@@ -177,7 +177,9 @@ it('routes token exchange and refresh through the account HTTP proxy, including 
     }); forwarded.on('error', () => outgoing.writeHead(502).end()); incoming.pipe(forwarded);
   });
   proxy.listen(0, '127.0.0.1'); await once(proxy, 'listening');
-  const config = { ...accountConfig(), proxy: `http://proxy-user:proxy-pass@127.0.0.1:${(proxy.address() as AddressInfo).port}` };
+  const proxyUrl = `http://proxy-user:proxy-pass@127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+  if (mode === 'global') manager.proxies.save(proxyUrl);
+  const config = { ...accountConfig(), proxyMode: mode, proxy: mode === 'custom' ? proxyUrl : undefined };
   try {
     const session = await flow.start('browser', { provider: 'google', account: config, client: { source: 'preset' } });
     await flow.paste(session.id, 'browser', await callbackUrl(session.authorizationUrl));

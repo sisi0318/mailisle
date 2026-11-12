@@ -6,6 +6,7 @@ import type { MailStore } from '@mail/db';
 import type { AccountInput, OAuthClientInfo, OAuthClientInput, OAuthClientSettings, OAuthProvider, OAuthStart } from '@mail/shared';
 import type { Vault } from './crypto';
 import { oauthPresets } from './oauth-presets';
+import { ProxySettings } from './proxy';
 
 export const oauthProviders = {
   google: { authorize: 'https://accounts.google.com/o/oauth2/v2/auth', token: 'https://oauth2.googleapis.com/token', scopes: ['https://mail.google.com/'] },
@@ -25,7 +26,10 @@ const tokenSchema = z.object({ access_token: z.string().min(1).regex(/^[^\x00-\x
 
 export class OAuthManager {
   private refreshing = new Map<string, Promise<string>>();
-  constructor(private store: MailStore, private vault: Vault, readonly endpoints: OAuthEndpoints = oauthProviders) {}
+  readonly proxies: ProxySettings;
+  constructor(private store: MailStore, private vault: Vault, readonly endpoints: OAuthEndpoints = oauthProviders) {
+    this.proxies = new ProxySettings(store, vault);
+  }
 
   settings(): OAuthClientSettings {
     return Object.fromEntries((['google', 'microsoft'] as const).map(provider => {
@@ -50,7 +54,7 @@ export class OAuthManager {
       return saved.client;
     }
     const credentials = client.source === 'preset' ? oauthPresets[provider] : client.source === 'global' ? this.customClient(provider) : client;
-    if (!credentials) throw new Error('所选 OAuth 客户端未配置，请打开 OAuth 客户端设置');
+    if (!credentials) throw new Error('所选 OAuth 客户端未配置，请打开全局设置');
     return { ...credentials, clientSecret: provider === 'google' ? credentials.clientSecret : undefined, source: client.source, pkce: provider === 'google' || client.source !== 'preset',
       redirectHost: provider === 'microsoft' && client.source !== 'preset' ? 'localhost' : '127.0.0.1' };
   }
@@ -60,10 +64,11 @@ export class OAuthManager {
     return this.vault.decrypt<AccountConfig>(account.encryptedConfig);
   }
   accessToken(config: AccountConfig, accountId?: string): Promise<string> {
-    if (!accountId) return this.refresh(config);
+    const proxy = this.proxies.resolve(config);
+    if (!accountId) return this.refresh({ ...config, proxy });
     const pending = this.refreshing.get(accountId);
     if (pending) return pending;
-    const work = this.refresh({ ...this.accountConfig(accountId), proxy: config.proxy }, accountId).finally(() => this.refreshing.delete(accountId));
+    const work = this.refresh({ ...this.accountConfig(accountId), proxy }, accountId).finally(() => this.refreshing.delete(accountId));
     this.refreshing.set(accountId, work);
     return work;
   }

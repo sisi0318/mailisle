@@ -12,6 +12,7 @@ import { composeDraft } from './compose';
 import { OAuthManager, type AccountConfig } from './oauth';
 import { OAuthFlow } from './oauth-flow';
 import { publicError, UserError } from './errors';
+import { proxyDisplay } from './proxy';
 
 export class MailService {
   readonly events = new EventEmitter();
@@ -69,6 +70,7 @@ export class MailService {
     this.pendingSync.clear();
   }
   async addAccount(config: AccountConfig) {
+    config = { ...config, ...this.oauth.proxies.prepare(config) };
     let id: string | undefined;
     const adapter = this.makeAdapter(config, () => id);
     try {
@@ -98,15 +100,30 @@ export class MailService {
     this.store.reorderAccounts(ids);
     this.emit({ type: 'change', accountId: ids[0] });
   }
+  async setGlobalProxy(value: string | null) {
+    const affected = this.store.accounts().filter(account => this.oauth.proxies.mode(this.accountConfig(account.id)) === 'global');
+    if (affected.some(account => this.changingAccounts.has(account.id))) throw new UserError('有邮箱正在修改设置，请稍后重试', 409);
+    this.oauth.proxies.save(value);
+    for (const account of affected) this.beginAccountChange(account.id);
+    try { await Promise.all(affected.map(account => this.pauseAccount(account.id))); }
+    finally {
+      for (const account of affected) {
+        this.changingAccounts.delete(account.id);
+        this.emit({ type: 'change', accountId: account.id });
+        void this.sync(account.id);
+      }
+    }
+    this.emit({ type: 'settings' });
+    return this.oauth.proxies.settings();
+  }
   accountSettings(id: string): AccountSettings {
     const config = this.accountConfig(id);
     const { password: _imapPassword, ...imap } = config.imap;
     const { password: _smtpPassword, ...smtp } = config.smtp;
-    const proxy = config.proxy ? new URL(config.proxy) : undefined;
     return { name: config.name, email: config.email, sentCopy: config.sentCopy, imap, smtp,
       receiveEnabled: config.receiveEnabled, sendEnabled: config.sendEnabled,
       ...(config.oauth ? { oauth: { provider: config.oauth.provider, client: { source: config.oauth.client.source, clientId: config.oauth.client.clientId, hasSecret: !!config.oauth.client.clientSecret } } } : {}),
-      ...(proxy ? { proxyDisplay: `${proxy.protocol}//${proxy.host}` } : {}) };
+      proxyMode: this.oauth.proxies.mode(config), proxyDisplay: proxyDisplay(config.proxy), globalProxyDisplay: this.oauth.proxies.settings().display };
   }
   async updateAccount(id: string, input: AccountUpdate) {
     const old = this.accountConfig(id);
@@ -121,12 +138,12 @@ export class MailService {
     const config: AccountConfig = { ...input, oauth: old.oauth,
       imap: { ...input.imap, password: input.imap.password ?? old.imap.password },
       smtp: { ...input.smtp, password: input.smtp.password ?? old.smtp.password },
-      proxy: input.proxy === undefined ? old.proxy : input.proxy || undefined };
+      ...this.oauth.proxies.prepare(input, old) };
     return this.replaceAccount(id, config, !!old.oauth);
   }
   async saveOAuthAccount(config: AccountConfig, id?: string) {
     if (!id) return this.addAccount(config);
-    await this.replaceAccount(id, config);
+    await this.replaceAccount(id, { ...config, ...this.oauth.proxies.prepare(config, this.accountConfig(id)) });
     return id;
   }
   private async replaceAccount(id: string, config: AccountConfig, keepOAuth = false) {
@@ -191,6 +208,30 @@ export class MailService {
       this.emit({ type: 'change', accountId: message.accountId });
       if (!mapped) void this.sync(message.accountId);
     });
+  }
+  async markAllRead(accountId: string, folderId?: string) {
+    const folder = folderId ? this.store.folder(folderId) : undefined;
+    if (folderId && (!folder || folder.accountId !== accountId)) throw new UserError('文件夹不存在或不属于这个邮箱', 404);
+    try {
+      await this.withAdapter(accountId, async adapter => {
+        const targets = folder ? [folder] : this.store.saveFolders(accountId, await adapter.listFolders());
+        for (const target of targets) {
+          const checkpoint = await adapter.markAllRead(target);
+          if (this.store.folder(target.id)?.uidValidity === checkpoint.uidValidity) this.store.markFolderRead(target.id, checkpoint.uidNext);
+        }
+      });
+    } finally { this.emit({ type: 'change', accountId }); void this.sync(accountId); }
+  }
+  async createFolder(accountId: string, name: string, parentId?: string) {
+    const parent = parentId ? this.store.folder(parentId) : undefined;
+    if (parentId && (!parent || parent.accountId !== accountId)) throw new UserError('上级文件夹不存在或不属于这个邮箱', 404);
+    const path = await this.withAdapter(accountId, async adapter => {
+      const created = await adapter.createFolder(name, parent);
+      this.store.saveFolders(accountId, await adapter.listFolders());
+      return created;
+    });
+    this.emit({ type: 'change', accountId }); void this.sync(accountId);
+    return this.store.folders(accountId).find(folder => folder.path === path);
   }
   async send(input: SendInput) {
     if (input.draftId && this.store.draft(input.draftId)?.accountId !== input.accountId) throw new Error('草稿不存在或发件人已改变，请先保存草稿');
@@ -365,7 +406,8 @@ export class MailService {
     return [];
   }
   private makeAdapter(config: AccountConfig, accountId: () => string | undefined) {
-    return this.adapterFactory(config, config.oauth ? () => this.oauth.accessToken(config, accountId()) : undefined);
+    const connected = { ...config, proxy: this.oauth.proxies.resolve(config) };
+    return this.adapterFactory(connected, config.oauth ? () => this.oauth.accessToken(config, accountId()) : undefined);
   }
   private beginAccountChange(id: string) {
     if (this.changingAccounts.has(id)) throw new UserError('邮箱配置正在更新，请稍后重试', 409);

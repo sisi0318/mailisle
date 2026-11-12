@@ -8,3 +8,4 @@ export * from './uploads';
 export * from './autoconfig';
 export * from './oauth';
 export * from './oauth-flow';
+export * from './proxy';

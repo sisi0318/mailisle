@@ -55,7 +55,7 @@
 
 ### 4. 填入本应用
 
-1. 打开侧栏底部的 **OAuth 客户端设置**,找到 **Microsoft**。
+1. 打开侧栏底部的 **全局设置**,找到 **Microsoft**。
 2. 在 **Client ID** 中填入 Application (client) ID,点 **保存**。这是公共桌面客户端,不需要 secret。
 3. 点 **连接邮箱**,选择 **Outlook.com / Hotmail** 或 **Microsoft 365（工作或学校）**。**OAuth 客户端** 保持 **服务商默认** 会使用刚保存的配置。
 4. 如只想给这一个邮箱使用不同客户端,选 **仅此邮箱使用自己的客户端**,填写 ID。自定义 Microsoft 客户端自动使用 PKCE 和 `http://localhost:<随机端口>/` 回调;服务在 IPv4、IPv6 回环上同时监听,无需手动设置主机。
