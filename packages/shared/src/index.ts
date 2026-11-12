@@ -156,7 +156,7 @@ export type FolderRole = 'inbox' | 'sent' | 'drafts' | 'trash' | 'junk' | 'archi
 export type Address = { name: string; address: string };
 export type Account = { id: string; name: string; email: string; lastSync: number | null; error: string | null; receiveEnabled: boolean; sendEnabled: boolean };
 export type Cursor = { uidValidity: string; uidNext: number; modseq: string | null };
-export type Folder = Cursor & { id: string; accountId: string; path: string; name: string; role: FolderRole };
+export type Folder = Cursor & { id: string; accountId: string; path: string; name: string; role: FolderRole; delimiter?: string | null };
 export type MailMetadata = {
   uid: number;
   remoteId: string | null;
@@ -187,10 +187,20 @@ export type MessageBody = { text: string; html: string | null; attachments: Atta
 export type MessagePage = { messages: Message[]; total: number; nextOffset: number | null };
 export type SyncEvent = { type: 'settings' } | { type: 'sync' | 'change' | 'draft'; accountId: string; messageId?: string; contentOnly?: boolean; state?: 'running' | 'idle' | 'error'; error?: string };
 export type BuildInfo = { version: string; revision: string | null; localChanges: boolean | null; builtAt: string };
+export const updateSettingsSchema = z.object({
+  enabled: z.boolean(), useGlobalProxy: z.boolean(),
+  frequency: z.enum(['hourly', 'daily', 'weekly', 'on-open']),
+  channel: z.enum(['stable', 'ci', 'source']),
+});
+export type UpdateSettings = z.infer<typeof updateSettingsSchema>;
+export type UpdateChannel = UpdateSettings['channel'];
+export const defaultUpdateSettings: UpdateSettings = { enabled: false, useGlobalProxy: true, frequency: 'daily', channel: 'source' };
 export type UpdateCheck = {
-  status: 'available' | 'current' | 'local-ahead' | 'diverged' | 'unknown';
+  status: 'available' | 'current' | 'local-ahead' | 'diverged' | 'unknown' | 'unpublished';
+  channel: UpdateChannel;
   current: BuildInfo;
-  latest: { revision: string; title: string; date: string; url: string };
+  latest: { revision: string; title: string; date: string; url: string; tag?: string } | null;
   checkedAt: string;
 };
+export type UpdateState = { checkedAt: string | null; result: UpdateCheck | null; error: string | null };
 export const PROJECT_URL = 'https://github.com/sisi0318/mailisle';

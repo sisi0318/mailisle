@@ -22,9 +22,9 @@ it.each(['\\NoSelect', '\\Noselect', '\\NOSELECT'])('skips %s containers while k
   const adapter = new ImapAdapter(accountConfig());
   try {
     expect(await adapter.listFolders()).toEqual([
-      { path: 'INBOX', name: 'INBOX', role: 'inbox' },
-      { path: '其他文件夹/QQ邮件订阅', name: 'QQ邮件订阅', role: 'other' },
-      { path: 'Work', name: 'Work', role: 'other' },
+      { path: 'INBOX', name: 'INBOX', role: 'inbox', delimiter: '/' },
+      { path: '其他文件夹/QQ邮件订阅', name: 'QQ邮件订阅', role: 'other', delimiter: '/' },
+      { path: 'Work', name: 'Work', role: 'other', delimiter: '/' },
     ]);
   } finally { await adapter.close(); }
 });

@@ -155,4 +155,18 @@ describe('HTTP authentication and local data', () => {
     expect(response.status).toBe(413);
     expect(store.sqlite.prepare('SELECT count(*) n FROM uploads').get()).toEqual({ n: 0 });
   });
+  it('authenticates and validates update preferences and folder deletion', async () => {
+    expect((await request('/settings/updates')).status).toBe(401);
+    expect((await request('/updates/open', 'POST', {})).status).toBe(401);
+    const { inbox } = seedAccount(store);
+    expect((await request(`/folders/${inbox.id}`, 'DELETE')).status).toBe(401);
+    const cookie = await login();
+    const settings = { enabled: true, useGlobalProxy: false, frequency: 'weekly', channel: 'ci' };
+    expect((await request('/settings/updates', 'PUT', { ...settings, channel: 'invalid' }, cookie)).status).toBe(400);
+    expect((await request('/settings/updates', 'PUT', settings, cookie)).status).toBe(200);
+    expect(await (await request('/settings/updates', 'GET', undefined, cookie)).json()).toEqual(settings);
+    expect((await request(`/folders/${inbox.id}`, 'DELETE', undefined, cookie)).status).toBe(400);
+    expect(store.folder(inbox.id)).toBeDefined();
+    expect((await request('/folders/missing', 'DELETE', undefined, cookie)).status).toBe(404);
+  });
 });

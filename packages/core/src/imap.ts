@@ -47,7 +47,7 @@ export class ImapAdapter implements MailAdapter {
   async listFolders() {
     // IMAP flags are case-insensitive; QQ uses \\NoSelect for container folders.
     return (await this.client.list()).filter(folder => ![...folder.flags].some(flag => flag.toLowerCase() === '\\noselect')).map(folder => ({
-      path: folder.path, name: folder.name, role: folderRole(folder.path, folder.specialUse),
+      path: folder.path, name: folder.name, role: folderRole(folder.path, folder.specialUse), delimiter: folder.delimiter || null,
     }));
   }
   async sync(folder: Folder, sink: SyncSink) {
@@ -168,6 +168,16 @@ export class ImapAdapter implements MailAdapter {
     const result = await this.client.mailboxCreate(parent ? [parent.path, name] : [name]);
     if (!result?.created) throw new Error('同名文件夹已存在');
     return result.path;
+  }
+  async deleteFolder(folder: Folder) {
+    const listed = await this.client.list();
+    const target = listed.find(item => item.path === folder.path);
+    if (!target) throw new Error('文件夹已不存在，请刷新后重试');
+    const descendants = listed.filter(item => item.path === target.path || (target.delimiter && item.path.startsWith(`${target.path}${target.delimiter}`)));
+    if (descendants.some(item => folderRole(item.path, item.specialUse) !== 'other')) throw new Error('不能删除系统文件夹或包含系统文件夹的目录');
+    for (const item of descendants.sort((a, b) => b.path.length - a.path.length)) {
+      if (!await this.client.mailboxDelete(item.path)) throw new Error(`删除文件夹「${item.name}」未完成，请刷新后重试`);
+    }
   }
   async send(input: SendInput, sentPath?: string, attachments: OutgoingAttachment[] = []) {
     const message = new MailComposer({

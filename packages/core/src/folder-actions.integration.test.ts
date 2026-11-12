@@ -59,3 +59,25 @@ it('creates a root folder and a child using the server hierarchy, and rejects du
   const delimiter = (await direct.list()).find(folder => folder.path === root!.path)!.delimiter;
   await expect(service.createFolder(accountId, `wrong${delimiter}level`, root!.id)).rejects.toThrow('分隔符');
 });
+it('deletes a custom folder and descendants on the server and removes their local index, keeping siblings', async () => {
+  const root = (await service.createFolder(accountId, `${prefix}-delete`))!;
+  const child = (await service.createFolder(accountId, 'child', root.id))!;
+  const sibling = (await service.createFolder(accountId, `${prefix}-delete-keep`))!;
+  const raw = await new MailComposer({ from: config.email, to: config.email, subject: '删除文件夹中的测试邮件', text: 'folder-delete-unique-body' }).compile().build();
+  await direct.append(root.path, raw); await direct.append(child.path, raw);
+  await service.sync(accountId);
+  const ids = [root, child].flatMap(folder => store.list(listSchema.parse({ accountId, folderId: folder.id, view: 'all' })).messages.map(message => message.id));
+  expect(ids).toHaveLength(2);
+  await service.deleteFolder(root.id); await service.sync(accountId);
+  const paths = (await direct.list()).map(folder => folder.path);
+  expect(paths).not.toContain(root.path); expect(paths).not.toContain(child.path); expect(paths).toContain(sibling.path);
+  expect(store.folder(root.id)).toBeUndefined(); expect(store.folder(child.id)).toBeUndefined();
+  for (const id of ids) expect(store.hasMessage(id)).toBe(false);
+  expect(store.list(listSchema.parse({ accountId, q: '删除文件夹', view: 'all' })).total).toBe(0);
+});
+it('refuses deleting the inbox without changing server or local folders', async () => {
+  const inbox = store.folders(accountId).find(folder => folder.role === 'inbox')!;
+  await expect(service.deleteFolder(inbox.id)).rejects.toThrow('系统文件夹');
+  expect(store.folder(inbox.id)).toBeDefined();
+  expect((await direct.list()).some(folder => folder.path === 'INBOX')).toBe(true);
+});

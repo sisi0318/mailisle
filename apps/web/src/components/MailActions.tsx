@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
-import { FolderPlus, MailCheck, RefreshCw } from 'lucide-react';
+import { FolderPlus, MailCheck, RefreshCw, Trash2 } from 'lucide-react';
 import type { Account, Folder } from '@mail/shared';
 import { api, json } from '../api';
 import { Button, Modal } from './ui';
 
 export type MailActionTarget = { account: Account; folder?: Folder; x: number; y: number };
-export function MailActions({ target, onClose, onCreate, onResult }: { target: MailActionTarget; onClose: () => void; onCreate: () => void; onResult: (text: string, error?: boolean) => void }) {
+export function MailActions({ target, onClose, onCreate, onDelete, onResult }: { target: MailActionTarget; onClose: () => void; onCreate: () => void; onDelete: () => void; onResult: (text: string, error?: boolean) => void }) {
   const query = useQueryClient();
   const { account, folder } = target;
   const mark = useMutation({ mutationFn: () => api(folder ? `/folders/${folder.id}/read-all` : `/accounts/${account.id}/read-all`, json('POST', {})),
@@ -26,8 +26,18 @@ export function MailActions({ target, onClose, onCreate, onResult }: { target: M
       {!folder && <button disabled={!account.receiveEnabled} onClick={() => { receive.mutate(); onClose(); }}><RefreshCw size={16} aria-hidden />立即收取邮件</button>}
       <button disabled={!account.receiveEnabled} onClick={readAll}><MailCheck size={16} aria-hidden />{folder ? '标记文件夹为已读' : '标记全部文件夹为已读'}</button>
       <button disabled={!account.receiveEnabled} onClick={onCreate}><FolderPlus size={16} aria-hidden />{folder ? '新建子文件夹' : '新建文件夹'}</button>
+      {folder && <button className="mail-action-danger" disabled={!account.receiveEnabled || folder.role !== 'other'} title={folder.role !== 'other' ? '系统文件夹不能删除' : undefined} onClick={onDelete}><Trash2 size={16} aria-hidden />删除文件夹</button>}
     </Dialog.Content>
   </Dialog.Portal></Dialog.Root>;
+}
+
+export function DeleteFolderDialog({ folder, onClose, onDeleted }: { folder: Folder; onClose: () => void; onDeleted: () => void }) {
+  const remove = useMutation({ mutationFn: () => api(`/folders/${folder.id}`, { method: 'DELETE' }), onSuccess: onDeleted });
+  return <Modal title="删除文件夹" description={folder.path} onClose={() => { if (!remove.isPending) onClose(); }}>
+    <div className="delete-folder-warning"><p>此文件夹及其子文件夹将被删除。</p><p>邮箱服务器也会同步删除。</p><p>其中的邮件可能一并永久删除。</p><p>请先移走需要保留的邮件。</p></div>
+    {remove.error && <p className="error" role="alert">{remove.error.message}</p>}
+    <div className="form-footer"><Button autoFocus disabled={remove.isPending} onClick={onClose}>取消</Button><Button variant="danger" disabled={remove.isPending} onClick={() => remove.mutate()}>{remove.isPending ? '正在删除…' : '确认删除'}</Button></div>
+  </Modal>;
 }
 
 export function CreateFolderDialog({ account, parent, onClose, onCreated }: { account: Account; parent?: Folder; onClose: () => void; onCreated: (folder?: Folder) => void }) {

@@ -1,6 +1,6 @@
 {
   "name": "mailisle",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "信屿 · MailIsle，本地存储的多邮箱客户端",
   "repository": { "type": "git", "url": "https://github.com/sisi0318/mailisle.git" },
   "license": "Apache-2.0",
@@ -10,8 +10,9 @@
   "engines": { "node": ">=22.12" },
   "scripts": {
     "dev": "tsx watch apps/server/src/index.ts --dev",
-    "dev:web": "pnpm --filter @mail/web dev",
-    "build": "pnpm --filter @mail/web build && tsup --config apps/server/tsup.config.ts",
+    "dev:web": "pnpm notices && pnpm --filter @mail/web dev",
+    "notices": "pnpm licenses list --prod --json | tsx scripts/license-notices.ts",
+    "build": "pnpm notices && pnpm --filter @mail/web build && tsup --config apps/server/tsup.config.ts",
     "start": "node apps/server/dist/index.js",
     "password": "node apps/server/dist/password.js",
     "check": "tsc --noEmit",

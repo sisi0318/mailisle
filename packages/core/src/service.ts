@@ -233,6 +233,27 @@ export class MailService {
     this.emit({ type: 'change', accountId }); void this.sync(accountId);
     return this.store.folders(accountId).find(folder => folder.path === path);
   }
+  async deleteFolder(id: string) {
+    const folder = this.store.folder(id);
+    if (!folder) throw new UserError('文件夹不存在', 404);
+    if (folder.role !== 'other') throw new UserError('不能删除系统文件夹', 400);
+    const config = this.accountConfig(folder.accountId);
+    if (!config.receiveEnabled) throw new UserError('请先在邮箱设置中开启收信', 409);
+    this.beginAccountChange(folder.accountId);
+    const adapter = this.makeAdapter(config, () => folder.accountId);
+    try {
+      // Stop active scans before removing folders they may still be writing into.
+      await this.pauseAccount(folder.accountId);
+      await adapter.connect();
+      try { await adapter.deleteFolder(folder); }
+      finally { this.store.saveFolders(folder.accountId, await adapter.listFolders()); }
+    } finally {
+      await adapter.close();
+      this.changingAccounts.delete(folder.accountId);
+      this.emit({ type: 'change', accountId: folder.accountId });
+      void this.sync(folder.accountId);
+    }
+  }
   async send(input: SendInput) {
     if (input.draftId && this.store.draft(input.draftId)?.accountId !== input.accountId) throw new Error('草稿不存在或发件人已改变，请先保存草稿');
     const attachments = input.attachmentIds.length ? await this.requireUploads().attachments(input.attachmentIds) : [];

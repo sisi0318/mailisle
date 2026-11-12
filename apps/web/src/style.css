@@ -117,8 +117,9 @@ legend{font-size:13px;padding:0 6px;color:var(--text-2)}
 .mail-app{display:flex;height:100dvh;overflow:hidden}
 .sidebar{width:240px;flex-shrink:0;background:var(--sidebar);border-right:1px solid var(--line);padding:20px 12px 12px;display:flex;flex-direction:column}
 .sidebar .brand{margin:0 8px 20px;gap:6px;flex-wrap:wrap}
-.app-version{font-size:12px;font-weight:500;letter-spacing:0;white-space:nowrap;color:var(--text-3)}
-.app-version:hover{color:var(--accent-strong);text-decoration:underline}
+.app-version{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.app-version:hover{background:var(--hover-strong);color:var(--accent-strong)}
+.app-version.has-update::after{content:'';display:inline-block;width:6px;height:6px;margin-left:4px;vertical-align:top;background:var(--accent);border-radius:50%}
 .version-details{display:grid;gap:10px;margin:0 0 16px}
 .version-details>div{display:flex;justify-content:space-between;gap:16px}
 .version-details dt{color:var(--text-3)}
@@ -139,7 +140,7 @@ legend{font-size:13px;padding:0 6px;color:var(--text-2)}
 .account-button:hover{background:var(--hover-strong)}
 .account-button.active{background:var(--accent-soft)}
 .account-header,.folder-row{display:flex;align-items:center;min-width:0}
-.account-header .account-button,.folder-row>button:first-child{flex:1;min-width:0}
+.account-header .account-button,.folder-row .folder-link{flex:1;min-width:0}
 .mail-more{display:flex;align-items:center;justify-content:center;flex-shrink:0;padding:5px;border-radius:5px;color:var(--text-3)}
 .mail-more:hover{background:var(--hover-strong);color:var(--text)}
 .folder-list .mail-more{padding:5px}
@@ -149,6 +150,8 @@ legend{font-size:13px;padding:0 6px;color:var(--text-2)}
 .mail-actions-account{font-size:12px;color:var(--text-3);margin:0 8px 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mail-actions-menu>button{display:flex;align-items:center;gap:10px;width:100%;padding:10px 8px;border-radius:5px;text-align:left;font-size:14px}
 .mail-actions-menu>button:hover{background:var(--hover-strong)}
+.mail-actions-menu>.mail-action-danger{color:var(--danger-ink);border-top:1px solid var(--line);border-radius:0 0 5px 5px}
+.delete-folder-warning{display:grid;gap:8px;margin-bottom:20px;font-size:14px;color:var(--text-2)}
 .account-chevron{flex-shrink:0;color:var(--text-3);transition:transform .15s}
 .account-button[aria-expanded="true"] .account-chevron{transform:rotate(90deg)}
 /* A square, so it is not mistaken for the round unread dot. */
@@ -162,6 +165,13 @@ legend{font-size:13px;padding:0 6px;color:var(--text-2)}
 .folder-list button span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .folder-list button:hover{background:var(--hover-strong)}
 .folder-list button.active{background:var(--accent-soft);color:var(--accent-strong);font-weight:600}
+.folder-tree,.folder-children{list-style:none;margin:0;padding:0}
+.folder-children{margin-left:9px;padding-left:8px;border-left:1px solid var(--line)}
+.folder-row .folder-toggle,.folder-toggle-space{flex:none;width:16px;padding:4px 0;justify-content:center}
+.folder-toggle svg{transition:transform .15s}
+.folder-toggle[aria-expanded="true"] svg{transform:rotate(90deg)}
+.folder-row .folder-link{padding-left:2px;gap:6px}
+.folder-link>svg{flex-shrink:0}
 .account-manager-list{list-style:none;margin:0;padding:0}
 .account-manager-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}
 .account-manager-summary{display:flex;align-items:center;gap:10px;flex:1;min-width:0}
@@ -391,5 +401,45 @@ legend{font-size:13px;padding:0 6px;color:var(--text-2)}
 .oauth-client-fields, .oauth-authorization { display: grid; gap: 14px; }
 .oauth-authorization textarea { min-height: 100px; overflow-wrap: anywhere; }
 .oauth-authorization .advanced p { margin: 12px 0; }
-.oauth-settings-form { padding: 16px 0; border-bottom: 1px solid var(--line); }
-.oauth-settings-form h3 { margin: 0 0 12px; font-size: 16px; }
+.settings-menu{display:grid;gap:10px}
+.settings-menu>button{display:flex;align-items:center;gap:14px;width:100%;padding:16px;border:1px solid var(--line-strong);border-radius:8px;background:var(--panel);text-align:left}
+.settings-menu>button:hover{background:var(--hover);border-color:var(--accent)}
+.settings-menu>button>svg:first-child{color:var(--accent-ink);flex-shrink:0}
+.settings-menu>button>svg:last-child{color:var(--text-3);flex-shrink:0}
+.settings-menu>button>span:not(.settings-provider-mark){display:grid;gap:5px;flex:1;min-width:0}
+.settings-menu strong,.settings-switch strong{font-size:14px;font-weight:500}
+.settings-menu small,.settings-switch small{font-size:12px;color:var(--text-3);font-weight:400}
+.settings-provider-mark{display:grid;place-items:center;width:30px;height:30px;border-radius:6px;background:var(--accent-soft);color:var(--accent-strong);font-size:13px;font-weight:600}
+.settings-breadcrumb{display:flex;align-items:center;gap:5px;flex-wrap:wrap;color:var(--text-3);font-size:12px;margin-bottom:18px}
+.settings-breadcrumb button{padding:4px;border-radius:4px}
+.settings-breadcrumb button:hover{background:var(--hover);color:var(--text)}
+.settings-breadcrumb span{color:var(--text-2)}
+.settings-heading{font-size:16px;font-weight:600;margin-bottom:16px;outline:none}
+.settings-intro{font-size:13px;color:var(--text-3);margin-bottom:16px;line-height:1.7}
+.settings-form{display:grid;gap:14px}
+.settings-form .hint{overflow-wrap:anywhere}
+.settings-saved{font-size:13px;color:var(--success-ink);margin-top:16px}
+.settings-switch{display:flex;flex-direction:row;justify-content:space-between;align-items:center;gap:16px}
+.settings-switch>span{display:grid;gap:5px}
+.settings-switch input{appearance:none;width:36px;height:22px;min-height:0;border:0;border-radius:12px;padding:3px;background:var(--line-strong);cursor:pointer;flex-shrink:0}
+.settings-switch input::before{content:'';display:block;width:16px;height:16px;border-radius:50%;background:var(--surface);box-shadow:0 1px 3px var(--shadow);transition:transform .15s}
+.settings-switch input:checked{background:var(--accent)}
+.settings-switch input:checked::before{transform:translateX(14px)}
+.about-identity{display:grid;justify-items:center;gap:9px;margin:4px 0 20px;text-align:center}
+.about-icon{display:grid;place-items:center;width:60px;height:60px;border-radius:14px;background:var(--accent-soft);color:var(--accent-strong)}
+.about-identity h4{font-size:21px;font-weight:600;color:var(--brand)}
+.about-identity p,.about-repository{font-size:12px;color:var(--text-3)}
+.about-repository{text-align:center;overflow-wrap:anywhere;margin:10px 0 20px}
+.about-links{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap}
+.legal-page{display:grid;gap:16px;font-size:13px;line-height:1.8;color:var(--text-2);overflow-wrap:anywhere}
+.legal-page h4{font-size:14px;font-weight:600;color:var(--text);margin-bottom:6px}
+.legal-page a{color:var(--accent-ink);text-decoration:underline;text-underline-offset:3px}
+.license-text{white-space:pre-wrap;overflow-wrap:anywhere;font-family:ui-monospace,monospace;font-size:12px;line-height:1.7;margin:0;color:var(--text-2)}
+.component-notices{display:grid;gap:8px}
+.legal-notice{border:1px solid var(--line-strong);border-radius:7px;padding:12px}
+.legal-notice summary{cursor:pointer;color:var(--text);font-size:13px}
+.legal-notice summary>span{display:inline-flex;gap:8px;flex-wrap:wrap;max-width:100%}
+.legal-notice summary strong{font-weight:500;overflow-wrap:anywhere}
+.legal-notice summary small{font-size:12px;color:var(--text-3);margin-left:6px}
+.legal-component-body{display:grid;gap:12px;padding-top:14px}
+.legal-notice>.license-text{margin-top:14px}

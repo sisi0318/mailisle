@@ -154,11 +154,11 @@ export class MailStore {
   folderUids(id: string): number[] {
     return this.db.select({ uid: schema.locations.uid }).from(schema.locations).where(eq(schema.locations.folderId, id)).all().map(row => row.uid);
   }
-  saveFolders(accountId: string, folders: { path: string; name: string; role: FolderRole }[]) {
+  saveFolders(accountId: string, folders: { path: string; name: string; role: FolderRole; delimiter?: string | null }[]) {
     this.sqlite.transaction(() => {
       for (const folder of folders) {
         this.db.insert(schema.folders).values({ ...folder, id: randomUUID(), accountId }).onConflictDoUpdate({
-          target: [schema.folders.accountId, schema.folders.path], set: { name: folder.name, role: folder.role },
+          target: [schema.folders.accountId, schema.folders.path], set: { name: folder.name, role: folder.role, delimiter: folder.delimiter ?? null },
         }).run();
       }
       const paths = new Set(folders.map(folder => folder.path));

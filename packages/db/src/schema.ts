@@ -13,6 +13,7 @@ export const accounts = sqliteTable('accounts', {
 export const folders = sqliteTable('folders', {
   id: text('id').primaryKey(), accountId: text('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
   path: text('path').notNull(), name: text('name').notNull(), role: text('role').$type<FolderRole>().notNull(),
+  delimiter: text('delimiter'),
   uidValidity: text('uid_validity').notNull().default(''), uidNext: integer('uid_next').notNull().default(1), modseq: text('modseq'),
 }, table => [uniqueIndex('folders_account_path').on(table.accountId, table.path)]);
 export const messages = sqliteTable('messages', {

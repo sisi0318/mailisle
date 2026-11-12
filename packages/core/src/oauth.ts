@@ -54,7 +54,7 @@ export class OAuthManager {
       return saved.client;
     }
     const credentials = client.source === 'preset' ? oauthPresets[provider] : client.source === 'global' ? this.customClient(provider) : client;
-    if (!credentials) throw new Error('所选 OAuth 客户端未配置，请打开全局设置');
+    if (!credentials) throw new Error('所选 OAuth 客户端未配置，请打开设置');
     return { ...credentials, clientSecret: provider === 'google' ? credentials.clientSecret : undefined, source: client.source, pkce: provider === 'google' || client.source !== 'preset',
       redirectHost: provider === 'microsoft' && client.source !== 'preset' ? 'localhost' : '127.0.0.1' };
   }

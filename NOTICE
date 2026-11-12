@@ -1,0 +1,18 @@
+MailIsle (信屿)
+Copyright 2026 MailIsle contributors
+https://github.com/sisi0318/mailisle
+
+Original project code is licensed under Apache-2.0, except where a file
+states otherwise. Third-party components retain their own copyright and
+license terms. This notice does not replace or modify those terms.
+
+The public OAuth configuration in packages/core/src/oauth-presets.ts is
+adapted from Thunderbird's OAuth2Providers.sys.mjs, under MPL-2.0.
+Its source, license and usage notes are provided in legal/THUNDERBIRD.md.
+
+Production builds include legal/THIRD-PARTY-NOTICES.txt and component license
+files in the web assets. These are generated from the installed production
+dependency tree, including transitive dependencies, by pnpm notices.
+
+MailIsle is an independent project. References to Mozilla, Thunderbird,
+Google, Microsoft and other products do not imply affiliation or endorsement.

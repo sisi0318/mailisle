@@ -34,7 +34,7 @@ beforeEach(async () => {
     store.cacheBody(id, body.text);
   }
   vi.spyOn(ImapAdapter.prototype, 'connect').mockResolvedValue();
-  vi.spyOn(ImapAdapter.prototype, 'listFolders').mockResolvedValue([{ path: 'INBOX', name: 'INBOX', role: 'inbox' }]);
+  vi.spyOn(ImapAdapter.prototype, 'listFolders').mockResolvedValue([{ path: 'INBOX', name: 'INBOX', role: 'inbox', delimiter: null }]);
   vi.spyOn(ImapAdapter.prototype, 'watchInbox').mockResolvedValue(() => {});
   service = new MailService(store, vault, cache);
 });

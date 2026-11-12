@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { FileText, Inbox, Mail, Menu, Plus, RefreshCw, Search, Send, TriangleAlert, X } from 'lucide-react';
-import type { Account, ComposeMode, Draft, DraftSummary, Folder, Message, MessagePage, SyncEvent, UnreadCounts } from '@mail/shared';
+import type { Account, ComposeMode, Draft, DraftSummary, Folder, Message, MessagePage, SyncEvent, UnreadCounts, UpdateState } from '@mail/shared';
 import { api, json } from './api';
 import { accountColor, folderList } from './format';
 import { Button, useMedia } from './components/ui';
@@ -18,10 +18,11 @@ type Notice = { text: string; kind: 'success' | 'error' };
 const Composer = lazy(() => import('./components/Composer').then(module => ({ default: module.Composer })));
 const AccountForm = lazy(() => import('./components/AccountForm').then(module => ({ default: module.AccountForm })));
 const AccountManager = lazy(() => import('./components/AccountManager').then(module => ({ default: module.AccountManager })));
-const GlobalSettings = lazy(() => import('./components/OAuth').then(module => ({ default: module.GlobalSettings })));
+const GlobalSettings = lazy(() => import('./components/GlobalSettings').then(module => ({ default: module.GlobalSettings })));
 const VersionDialog = lazy(() => import('./components/VersionDialog').then(module => ({ default: module.VersionDialog })));
 const MailActions = lazy(() => import('./components/MailActions').then(module => ({ default: module.MailActions })));
 const CreateFolderDialog = lazy(() => import('./components/MailActions').then(module => ({ default: module.CreateFolderDialog })));
+const DeleteFolderDialog = lazy(() => import('./components/MailActions').then(module => ({ default: module.DeleteFolderDialog })));
 const pageTitle = document.title;
 
 export default function App() {
@@ -64,6 +65,13 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
   const accounts = useQuery({ queryKey: ['accounts'], queryFn: () => api<Account[]>('/accounts') });
   const folders = useQuery({ queryKey: ['folders'], queryFn: () => api<Folder[]>('/folders') });
   const counts = useQuery({ queryKey: ['counts'], queryFn: () => api<UnreadCounts>('/counts') });
+  const updateStatus = useQuery({ queryKey: ['update-status'], queryFn: () => api<UpdateState>('/updates/status'), enabled: !locked });
+  const checkedOnOpen = useRef(false);
+  useEffect(() => {
+    if (locked || checkedOnOpen.current) return;
+    checkedOnOpen.current = true;
+    void api<UpdateState>('/updates/open', json('POST', {})).then(state => query.setQueryData(['update-status'], state)).catch(() => {});
+  }, [locked, query]);
   const [filter, setFilter] = useState<Filter>({ view: 'inbox' });
   const [expandedAccountId, setExpandedAccountId] = useState<string>();
   const [search, setSearch] = useState('');
@@ -77,6 +85,7 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
   const [versionDialog, setVersionDialog] = useState(false);
   const [mailActions, setMailActions] = useState<MailActionTarget | null>(null);
   const [creatingFolder, setCreatingFolder] = useState<MailActionTarget | null>(null);
+  const [deletingFolder, setDeletingFolder] = useState<Folder | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [syncing, setSyncing] = useState<Set<string>>(new Set());
   const [connected, setConnected] = useState(false);
@@ -153,7 +162,7 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     const updateMessage = (event: Event) => {
       lastEvent = Date.now();
       const update = JSON.parse((event as MessageEvent<string>).data) as SyncEvent;
-      if (update.type === 'settings') { refresh(['global-proxy', 'oauth-clients']); return; }
+      if (update.type === 'settings') { refresh(['global-proxy', 'oauth-clients', 'update-settings', 'update-status']); return; }
       if (update.messageId) void query.invalidateQueries({ queryKey: ['body', update.messageId] });
       if (update.state) setSyncing(current => {
         const next = new Set(current);
@@ -299,6 +308,7 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     onAddAccount: () => { setMobileNav(false); setAccountForm({}); },
     onGlobalSettings: () => { setMobileNav(false); setGlobalSettings(true); },
     onVersion: () => { setMobileNav(false); setVersionDialog(true); },
+    updateAvailable: updateStatus.data?.result?.status === 'available',
     onActions: setMailActions,
     onLogout };
   const reading = !isDrafts && !!selectedMessage;
@@ -350,7 +360,13 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     {globalSettings && <Suspense fallback={null}><GlobalSettings onClose={() => setGlobalSettings(false)} onUpdates={() => { setGlobalSettings(false); setVersionDialog(true); }} /></Suspense>}
     {versionDialog && <Suspense fallback={null}><VersionDialog onClose={() => setVersionDialog(false)} /></Suspense>}
     {mailActions && <Suspense fallback={null}><MailActions target={mailActions} onClose={() => setMailActions(null)} onCreate={() => { setMobileNav(false); setCreatingFolder(mailActions); setMailActions(null); }}
+      onDelete={() => { setMobileNav(false); setDeletingFolder(mailActions.folder!); setMailActions(null); }}
       onResult={(text, error) => setNotice({ text, kind: error ? 'error' : 'success' })} /></Suspense>}
+    {deletingFolder && <Suspense fallback={null}><DeleteFolderDialog folder={deletingFolder} onClose={() => setDeletingFolder(null)} onDeleted={() => {
+      const selectedFolder = folders.data?.find(folder => folder.id === filter.folderId);
+      if (selectedFolder && (selectedFolder.id === deletingFolder.id || (deletingFolder.delimiter && selectedFolder.path.startsWith(`${deletingFolder.path}${deletingFolder.delimiter}`) && selectedFolder.accountId === deletingFolder.accountId))) navigate({ view: 'inbox', accountId: deletingFolder.accountId });
+      setDeletingFolder(null); void query.invalidateQueries(); setNotice({ text: '文件夹已删除', kind: 'success' });
+    }} /></Suspense>}
     {creatingFolder && <Suspense fallback={null}><CreateFolderDialog account={creatingFolder.account} parent={creatingFolder.folder} onClose={() => setCreatingFolder(null)} onCreated={folder => {
       setCreatingFolder(null); void query.invalidateQueries({ queryKey: ['folders'] });
       if (folder) navigate({ view: 'all', accountId: folder.accountId, folderId: folder.id });

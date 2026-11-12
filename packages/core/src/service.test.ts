@@ -297,7 +297,7 @@ function serverAdapter() {
     bodyText: vi.fn(async () => '后台索引正文'),
     copyRecipients: vi.fn(async () => []),
     flags: vi.fn(async () => {}), move: vi.fn(async (): Promise<MoveReceipt> => ({ uid: 10, uidValidity: '1' })),
-    markAllRead: vi.fn<MailAdapter['markAllRead']>(async () => ({ uidValidity: '1', uidNext: 2 })), createFolder: vi.fn<MailAdapter['createFolder']>(async name => name),
+    markAllRead: vi.fn<MailAdapter['markAllRead']>(async () => ({ uidValidity: '1', uidNext: 2 })), createFolder: vi.fn<MailAdapter['createFolder']>(async name => name), deleteFolder: vi.fn<MailAdapter['deleteFolder']>(async () => {}),
     send: vi.fn<MailAdapter['send']>(async () => ({ messageId: '<sent>' })),
     watchInbox: vi.fn(async (onChange: () => void) => { notify = onChange; return stopWatch; }), stopWatch,
   };

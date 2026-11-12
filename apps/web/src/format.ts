@@ -50,6 +50,39 @@ export function folderList(folders: Folder[]): { folder: Folder; label: string }
     });
 }
 
+export type FolderNode = { key: string; accountId: string; path: string; label: string; folder?: Folder; children: FolderNode[] };
+export function folderTree(folders: Folder[]): FolderNode[] {
+  const nodes = new Map<string, FolderNode>();
+  for (const { folder, label } of folderList(folders)) {
+    const key = `${folder.accountId}:${folder.path}`;
+    nodes.set(key, { key, accountId: folder.accountId, path: folder.path, label: label === folder.path ? folder.name : label, folder, children: [] });
+  }
+  const roots: FolderNode[] = [];
+  for (const folder of folders) {
+    let node = nodes.get(`${folder.accountId}:${folder.path}`)!;
+    let path = folder.path;
+    while (folder.delimiter && path.includes(folder.delimiter)) {
+      path = path.slice(0, path.lastIndexOf(folder.delimiter));
+      if (!path) break;
+      const key = `${folder.accountId}:${path}`;
+      let parent = nodes.get(key);
+      if (!parent) {
+        parent = { key, accountId: folder.accountId, path, label: path.split(folder.delimiter).at(-1)!, children: [] };
+        nodes.set(key, parent);
+      }
+      if (!parent.children.includes(node)) parent.children.push(node);
+      node = parent;
+    }
+    if (!roots.includes(node)) roots.push(node);
+  }
+  function sort(items: FolderNode[]): FolderNode[] {
+    items.sort((a, b) => roleOrder.indexOf(a.folder?.role ?? 'other') - roleOrder.indexOf(b.folder?.role ?? 'other') || a.label.localeCompare(b.label, 'zh-CN'));
+    for (const item of items) sort(item.children);
+    return items;
+  }
+  return sort(roots);
+}
+
 type Issue = { path: PropertyKey[]; message: string };
 
 /** Turns schema issues into one readable line. `labels` maps a field path such as "imap.host" to its form label. */

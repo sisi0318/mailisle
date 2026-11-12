@@ -8,6 +8,7 @@ import { MailStore } from '@mail/db';
 import { BodyCache, deriveKey, hashPassword, MailService, UploadStore, Vault } from '@mail/core';
 import { createApp } from './app';
 import { EXAMPLE_PASSWORD, readConfig } from './config';
+import { UpdateChecker, UpdateManager } from './updates';
 
 async function main() {
   if (existsSync('.env')) process.loadEnvFile('.env');
@@ -34,7 +35,10 @@ async function main() {
     })();
   }
   const service = new MailService(store, vault, new BodyCache(join(config.dataDir, 'bodies')), undefined, new UploadStore(store, join(config.dataDir, 'uploads')));
+  const updates = new UpdateChecker(undefined, undefined, () => service.oauth.proxies.globalUrl());
+  const updateManager = new UpdateManager(store, updates, () => service.events.emit('update', { type: 'settings' }));
   const app = createApp({ service, passwordHash: store.getSetting('password-hash')!, port: config.port,
+    updates, updateManager,
     dev: config.dev, publicUrl: config.publicUrl, https: !!config.tls,
     // The working directory first, as before and as in the Docker image; next to the server build when started from elsewhere.
     webRoot: [resolve('apps/web/dist'), join(entryDir, '../../web/dist')].find(root => existsSync(join(root, 'index.html'))) ?? resolve('apps/web/dist'), docsRoot: existsSync(join(entryDir, 'docs')) ? join(entryDir, 'docs') : resolve('docs') });
@@ -42,11 +46,13 @@ async function main() {
     const localHost = ['0.0.0.0', '::'].includes(config.host) ? '127.0.0.1' : config.host.includes(':') ? `[${config.host}]` : config.host;
     console.log(`信屿 MailIsle 已启动：${config.publicUrl ?? `${config.tls ? 'https' : 'http'}://${localHost}:${config.port}`}（监听 ${config.host}:${config.port}）`);
     service.start();
+    updateManager.start();
   });
   let closing = false;
   const shutdown = async () => {
     if (closing) return;
     closing = true;
+    updateManager.stop();
     // A connection that never settles must not keep the process alive; the database is closed cleanly either way.
     setTimeout(() => { try { store.close(); } catch { /* Already closed. */ } process.exit(1); }, 10_000).unref();
     server.close();

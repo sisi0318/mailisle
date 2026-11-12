@@ -11,18 +11,19 @@ import { bodyLimit } from 'hono/body-limit';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { accountSchema, accountUpdateSchema, composeSchema, discoverySchema, draftSchema, flagsSchema, listSchema, loginSchema, MAX_ATTACHMENT_BYTES, moveSchema, sendSchema, type SyncEvent } from '@mail/shared';
 import { discoverAccount, errorStatus, publicError, UserError, verifyPassword, type MailService } from '@mail/core';
-import { accountOrderSchema, createFolderSchema, globalProxySchema, oauthStartSchema, oauthProviderSchema, oauthClientUpdateSchema, oauthCallbackSchema } from '@mail/shared';
+import { accountOrderSchema, createFolderSchema, globalProxySchema, updateSettingsSchema, oauthStartSchema, oauthProviderSchema, oauthClientUpdateSchema, oauthCallbackSchema } from '@mail/shared';
 import { createAccessPolicy } from './access';
 import { SESSION_SECONDS, WebSessions } from './sessions';
 import { clientKey, LoginLimiter } from './login-limit';
-import { UpdateChecker } from './updates';
+import { UpdateChecker, UpdateManager } from './updates';
 
 const PUBLIC_PATHS = ['/api/session', '/api/login'];
 
-type Options = { service: MailService; passwordHash: string; port: number; webRoot?: string; docsRoot?: string; dev?: boolean; publicUrl?: string; https?: boolean; updates?: UpdateChecker };
+type Options = { service: MailService; passwordHash: string; port: number; webRoot?: string; docsRoot?: string; dev?: boolean; publicUrl?: string; https?: boolean; updates?: UpdateChecker; updateManager?: UpdateManager };
 
 export function createApp({ service, passwordHash, port, webRoot, docsRoot = resolve('docs'), dev = false, publicUrl, https = false,
-  updates = new UpdateChecker(undefined, undefined, () => service.oauth.proxies.globalUrl()) }: Options) {
+  updates = new UpdateChecker(undefined, undefined, () => service.oauth.proxies.globalUrl()),
+  updateManager = new UpdateManager(service.store, updates, () => service.events.emit('update', { type: 'settings' } satisfies SyncEvent)) }: Options) {
   const app = new Hono<{ Variables: { secureCookie: boolean } }>();
   const sessions = new WebSessions(service.store);
   const sessionEvents = new EventEmitter();
@@ -82,7 +83,15 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
   });
   app.get('/api/accounts', c => c.json(service.store.accounts()));
   app.get('/api/version', c => c.json(updates.current));
-  app.post('/api/updates/check', async c => c.json(await updates.check()));
+  app.post('/api/updates/check', async c => c.json(await updateManager.check()));
+  app.get('/api/updates/status', c => c.json(updateManager.state()));
+  app.post('/api/updates/open', async c => c.json(await updateManager.automatic('open')));
+  app.get('/api/settings/updates', c => c.json(updateManager.settings()));
+  app.put('/api/settings/updates', async c => {
+    const parsed = updateSettingsSchema.safeParse(await readJson(c));
+    if (!parsed.success) return c.json({ error: '更新设置不正确' }, 400);
+    return c.json(updateManager.save(parsed.data));
+  });
   app.get('/api/settings/proxy', c => c.json(service.oauth.proxies.settings()));
   app.put('/api/settings/proxy', async c => {
     const parsed = globalProxySchema.safeParse(await readJson(c));
@@ -222,6 +231,10 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     return c.json({ folder }, 201);
   });
   app.get('/api/folders', c => c.json(service.store.folders()));
+  app.delete('/api/folders/:id', async c => {
+    await service.deleteFolder(c.req.param('id'));
+    return c.json({ ok: true });
+  });
   app.get('/api/messages', c => {
     const parsed = listSchema.safeParse(c.req.query());
     if (!parsed.success) return c.json({ error: '查询条件不正确' }, 400);

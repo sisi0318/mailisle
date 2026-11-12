@@ -1,0 +1,7 @@
+[
+  { "name": "@nodable/entities", "version": "3.1.0", "file": "nodable-entities-MIT.txt", "source": "https://github.com/nodable/val-parsers/blob/b89ecb0d419969e2989b74c5304bc9b66931727e/LICENSE" },
+  { "name": "degenerator", "version": "5.0.1", "file": "degenerator-MIT.txt", "source": "https://github.com/TooTallNate/proxy-agents/blob/84e41e433b422cbe9f073952d8e16052eb9b0251/packages/degenerator/LICENSE" },
+  { "name": "react-remove-scroll-bar", "version": "2.3.8", "file": "react-remove-scroll-bar-MIT.txt", "source": "https://github.com/theKashey/react-remove-scroll-bar/blob/8ca9ba5ea52de03308fe8ced94f7b159a44d28ff/LICENSE" },
+  { "name": "drizzle-orm", "version": "0.44.7", "file": "drizzle-orm-Apache-2.0.txt", "source": "https://github.com/drizzle-team/drizzle-orm/blob/0.44.7/LICENSE" },
+  { "name": "lucide-react", "version": "0.468.0", "license": "ISC AND MIT", "file": "feather-MIT.txt", "source": "https://github.com/feathericons/feather/blob/v4.29.2/LICENSE" }
+]

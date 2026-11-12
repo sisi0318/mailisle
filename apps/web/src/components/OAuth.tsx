@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { GlobalProxySettings, OAuthClientInfo, OAuthClientSettings, OAuthProgress, OAuthProvider, OAuthStarted } from '@mail/shared';
+import type { OAuthClientInfo, OAuthClientSettings, OAuthProgress, OAuthProvider, OAuthStarted } from '@mail/shared';
 import { api, json } from '../api';
 import { Button, Modal } from './ui';
 
@@ -55,46 +55,4 @@ export function OAuthAuthorization({ session, onSaved, onCancel, onBusy }: { ses
     <div className="form-footer"><Button onClick={onCancel} disabled={finish.isPending}>返回设置</Button>
       <Button variant="primary" disabled={status !== 'ready' || finish.isPending} onClick={() => finish.mutate()}>{finish.isPending ? '正在检查连接…' : finish.error ? '重试完成连接' : '完成连接'}</Button></div>
   </div>;
-}
-
-export function GlobalSettings({ onClose, onUpdates }: { onClose: () => void; onUpdates: () => void }) {
-  const query = useQueryClient();
-  const proxy = useQuery({ queryKey: ['global-proxy'], queryFn: () => api<GlobalProxySettings>('/settings/proxy') });
-  const [proxyInput, setProxyInput] = useState('');
-  const saveProxy = useMutation({ mutationFn: (value: string | null) => api<GlobalProxySettings>('/settings/proxy', json('PUT', { proxy: value })),
-    onSuccess: data => { query.setQueryData(['global-proxy'], data); setProxyInput(''); setSaved(data.configured ? '全局代理已保存。' : '全局代理已清除。'); } });
-  const clients = useQuery({ queryKey: ['oauth-clients'], queryFn: () => api<OAuthClientSettings>('/oauth/clients') });
-  const [saved, setSaved] = useState('');
-  const save = useMutation({ mutationFn: ({ provider, data }: { provider: OAuthProvider; data: { clientId: string; clientSecret?: string } | null }) => api<OAuthClientSettings>(`/oauth/clients/${provider}`, json('PUT', data)),
-    onSuccess: (data, input) => { query.setQueryData(['oauth-clients'], data); setSaved(`${input.provider === 'google' ? 'Google' : 'Microsoft'} 客户端设置已保存。已有邮箱请到邮箱设置重新授权。`); } });
-  function submit(event: FormEvent<HTMLFormElement>, provider: OAuthProvider) {
-    event.preventDefault(); const form = new FormData(event.currentTarget);
-    save.mutate({ provider, data: { clientId: String(form.get('clientId') ?? '').trim(), clientSecret: String(form.get('clientSecret') ?? '') || undefined } });
-  }
-  return <Modal title="全局设置" description="设置默认代理和邮箱授权应用。" onClose={() => { if (!save.isPending && !saveProxy.isPending) onClose(); }}>
-    <form className="oauth-settings-form" onSubmit={event => { event.preventDefault(); saveProxy.mutate(proxyInput.trim()); }}>
-      <h3>网络代理</h3>
-      <fieldset className="form-fields" disabled={saveProxy.isPending}>
-        <p className="hint">{proxy.isPending ? '正在读取…' : proxy.error ? proxy.error.message : proxy.data?.display ? `当前代理：${proxy.data.display}` : '未设置，默认直接连接。'}</p>
-        <label>全局代理地址<input value={proxyInput} onChange={event => setProxyInput(event.target.value)} placeholder="HTTP 或 SOCKS5 代理地址" autoComplete="off" /></label>
-        <p className="hint">用于继承全局的邮箱、邮箱授权及更新检查。独立代理和直连邮箱不受影响。</p>
-        <div className="form-footer"><Button type="button" disabled={!proxy.data?.configured} onClick={() => saveProxy.mutate(null)}>清除代理</Button>
-          <Button type="submit" variant="primary" disabled={!proxyInput.trim()}>{saveProxy.isPending ? '正在应用…' : '保存代理'}</Button></div>
-      </fieldset>
-      {saveProxy.error && <p className="error" role="alert">{saveProxy.error.message}</p>}
-    </form>
-    <p className="hint">以下授权应用可按邮箱单独覆盖。</p>
-    {!clients.data ? <p>{clients.error?.message ?? '正在读取…'}</p> : (['google', 'microsoft'] as const).map(provider => <form className="oauth-settings-form" key={`${provider}:${clients.data[provider].custom?.clientId ?? ''}`} onSubmit={event => submit(event, provider)}>
-      <h3>{provider === 'google' ? 'Google' : 'Microsoft'}</h3>
-      <fieldset className="form-fields" disabled={save.isPending}>
-        <label>Client ID<input name="clientId" required defaultValue={clients.data![provider].custom?.clientId} autoComplete="off" /></label>
-        {provider === 'google' && <label>Client secret<input name="clientSecret" type="password" required={!clients.data[provider].custom?.hasSecret} placeholder={clients.data[provider].custom?.hasSecret ? '已保存，留空保留（更换 ID 时须重填）' : ''} autoComplete="new-password" /></label>}
-        {provider === 'microsoft' && <p className="hint">公共桌面客户端，不需要 secret。请登记回调地址 http://localhost。</p>}
-        <a href={`/api/oauth/docs/${provider}`} target="_blank" rel="noreferrer">查看注册教程 ↗</a>
-        <div className="form-footer"><Button type="button" disabled={!clients.data[provider].custom} onClick={() => save.mutate({ provider, data: null })}>恢复预置值</Button><Button type="submit" variant="primary">保存</Button></div>
-      </fieldset>
-    </form>)}
-    {save.error && <p className="error" role="alert">{save.error.message}</p>}{saved && <p role="status">{saved}</p>}
-    <div className="form-footer"><Button disabled={save.isPending || saveProxy.isPending} onClick={onUpdates}>版本与更新</Button></div>
-  </Modal>;
 }
