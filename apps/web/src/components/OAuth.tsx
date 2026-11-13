@@ -17,8 +17,7 @@ export function OAuthClientFields({ provider, source, onSource, saved, clients }
     </select></label>
     {source === 'custom' && <div className="form-grid"><label>Client ID<input name="oauthClientId" autoComplete="off" /></label>
       {provider === 'google' && <label>Client secret<input name="oauthClientSecret" type="password" autoComplete="new-password" /></label>}</div>}
-    <div className="provider-note">{preset ? <p>即将使用 Thunderbird 的公开客户端。授权页会显示 <strong>Mozilla Thunderbird</strong>，邮件由本应用直接收发。预置值可能失效，也可能被组织禁用；你可以改用自己的客户端。</p>
-      : <p>使用自己的桌面客户端。客户端设置会随本次授权保存在此邮箱中；更改服务商默认值后，已有邮箱需要重新授权。</p>}
+    <div className="provider-note"><p>授权应用：{preset ? 'Mozilla Thunderbird' : '自定义应用'}</p>
       <a href={`/api/oauth/docs/${provider}`} target="_blank" rel="noreferrer">注册自己的 {provider === 'google' ? 'Google' : 'Microsoft'} 客户端 ↗</a>
     </div>
   </div>;

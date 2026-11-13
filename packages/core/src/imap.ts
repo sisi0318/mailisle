@@ -4,6 +4,7 @@ import MailComposer from 'nodemailer/lib/mail-composer/index.js';
 import type SMTPTransport from 'nodemailer/lib/smtp-transport/index.js';
 import * as socks from 'socks';
 import PostalMime from 'postal-mime';
+import { connect as connectSocket, type Socket } from 'node:net';
 import { convert } from 'html-to-text';
 import type { Address, FlagUpdate, Folder, FolderRole, MailMetadata, SendInput } from '@mail/shared';
 import type { MailAdapter, SyncSink } from './adapter';
@@ -15,10 +16,17 @@ export class ImapAdapter implements MailAdapter {
   private connecting?: Promise<void>;
   private connectionAttempted = false;
   private closed = false;
-  constructor(private account: AccountConfig, readonly socketTimeoutMs = 90_000, private accessToken?: () => Promise<string>) {
+  private watchers = new Set<ImapFlow>();
+  private transports = new Set<{ close(): void }>();
+  private smtpSockets = new Set<Socket>();
+  private lifetime = new AbortController();
+  constructor(private account: AccountConfig, readonly socketTimeoutMs = 90_000, private accessToken?: () => Promise<string>, signal?: AbortSignal) {
     this.client = this.newClient();
+    const lifetime = signal ? AbortSignal.any([signal, this.lifetime.signal]) : this.lifetime.signal;
+    if (lifetime.aborted) void this.close(); else lifetime.addEventListener('abort', () => { void this.close(); }, { once: true });
   }
   async connect() {
+    if (this.closed) throw new Error('邮箱连接已关闭');
     if (this.connecting) return this.connecting;
     if (this.client.usable) return;
     if (this.connectionAttempted) {
@@ -26,7 +34,6 @@ export class ImapAdapter implements MailAdapter {
       this.client = this.newClient();
     }
     this.connectionAttempted = true;
-    this.closed = false;
     this.connecting = (async () => {
       if (this.accessToken) {
         const token = await this.accessToken();
@@ -41,9 +48,20 @@ export class ImapAdapter implements MailAdapter {
     const transport = await this.smtp();
     try { await transport.verify(); }
     catch (error) { throw this.smtpError(error); }
-    finally { transport.close(); }
+    finally { transport.close(); this.transports.delete(transport); }
   }
-  async close() { this.closed = true; this.client.close(); }
+  async close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.lifetime.abort();
+    this.client.close();
+    for (const client of this.watchers) client.close();
+    this.watchers.clear();
+    for (const transport of this.transports) transport.close();
+    this.transports.clear();
+    for (const socket of this.smtpSockets) socket.destroy();
+    this.smtpSockets.clear();
+  }
   async listFolders() {
     // IMAP flags are case-insensitive; QQ uses \\NoSelect for container folders.
     return (await this.client.list()).filter(folder => ![...folder.flags].some(flag => flag.toLowerCase() === '\\noselect')).map(folder => ({
@@ -204,15 +222,16 @@ export class ImapAdapter implements MailAdapter {
       }
       return { messageId: result.messageId, ...(warnings.length ? { warning: warnings.join(' ') } : {}) };
     } catch (error) { throw this.smtpError(error); }
-    finally { transport.close(); }
+    finally { transport.close(); this.transports.delete(transport); }
   }
   async watchInbox(onChange: () => void, onError: (error: Error) => void) {
     const token = this.accessToken ? await this.accessToken() : undefined;
     if (this.closed) throw new Error('邮箱连接已关闭');
     const client = this.newClient(true, token);
+    this.watchers.add(client);
     let stopped = false;
     client.on('error', onError);
-    client.on('close', () => { if (!stopped) onError(new Error('收件箱监听连接已断开，将在轮询时重新连接')); });
+    client.on('close', () => { this.watchers.delete(client); if (!stopped && !this.closed) onError(new Error('收件箱监听连接已断开，将在轮询时重新连接')); });
     client.on('exists', onChange);
     client.on('flags', onChange);
     client.on('expunge', onChange);
@@ -258,6 +277,7 @@ export class ImapAdapter implements MailAdapter {
       ? new Error('邮箱 OAuth 发信登录未通过，请重新授权，并确认 SMTP AUTH 已开启及组织允许该权限') : error;
   }
   private async smtp() {
+    if (this.closed) throw new Error('邮箱连接已关闭');
     const server = this.account.smtp;
     const options: SMTPTransport.Options & { proxy?: string; disableFileAccess: boolean; disableUrlAccess: boolean } = {
       host: server.host, port: server.port, secure: server.security === 'tls',
@@ -266,9 +286,39 @@ export class ImapAdapter implements MailAdapter {
       connectionTimeout: 20_000, greetingTimeout: 20_000, socketTimeout: 60_000,
       disableFileAccess: true, disableUrlAccess: true,
     };
+    if (this.closed) throw new Error('邮箱连接已关闭');
     const transport = nodemailer.createTransport(options);
+    this.transports.add(transport);
     transport.set('proxy_socks_module', socks);
+    // A non-pooled Nodemailer transport's close() does not close its active socket.
+    const mailer = transport as typeof transport & { getSocket?: (options: SMTPTransport.Options, callback: (error: Error | null, result?: { connection: Socket; secured?: boolean }) => void) => void };
+    const proxySocket = mailer.getSocket;
+    mailer.getSocket = (options, callback) => {
+      const ready = (error: Error | null, result?: { connection: Socket; secured?: boolean }) => {
+        if (error || !result) { callback(error ?? new Error('无法建立发信连接')); return; }
+        if (this.closed) { result.connection.destroy(); callback(new Error('邮箱连接已关闭')); return; }
+        this.smtpSockets.add(result.connection);
+        result.connection.once('close', () => this.smtpSockets.delete(result.connection));
+        callback(null, result);
+      };
+      if (proxySocket) proxySocket(options, ready);
+      else this.openSmtpSocket(ready);
+    };
     return transport;
+  }
+  private openSmtpSocket(callback: (error: Error | null, result?: { connection: Socket }) => void) {
+    const socket = connectSocket({ host: this.account.smtp.host, port: this.account.smtp.port });
+    this.smtpSockets.add(socket);
+    let delivered = false;
+    const timer = setTimeout(() => finish(Object.assign(new Error('SMTP connection timeout'), { code: 'ETIMEDOUT' })), 20_000);
+    const finish = (error?: Error) => {
+      if (delivered) return;
+      delivered = true; clearTimeout(timer);
+      if (error) { socket.destroy(); callback(error); } else callback(null, { connection: socket });
+    };
+    socket.once('connect', () => finish());
+    socket.once('error', error => finish(error));
+    socket.once('close', () => { this.smtpSockets.delete(socket); finish(new Error('发信连接已关闭')); });
   }
 }
 

@@ -23,15 +23,15 @@ export class BodyPrefetcher {
     if (!this.store.pendingBodies(id, 1).length) return Promise.resolve();
     const job: Job = { adapter: this.createAdapter(id), cancelled: false, rescan: false, done: Promise.resolve() };
     this.jobs.set(id, job);
-    job.done = this.run(id, job).finally(() => this.jobs.delete(id));
+    job.done = this.run(id, job).finally(() => { if (this.jobs.get(id) === job) this.jobs.delete(id); });
     return job.done;
   }
   async cancel(id: string) {
     const job = this.jobs.get(id);
     if (!job) return;
     job.cancelled = true;
-    await job.adapter.close();
-    await job.done;
+    this.jobs.delete(id);
+    await Promise.allSettled([job.adapter.close(), job.done]);
   }
   async stop() {
     this.enabled = false;
@@ -67,7 +67,7 @@ export class BodyPrefetcher {
             if (job.cancelled) return;
             changed = (cached ? this.store.cacheBody(message.id, text) : this.store.indexBody(message.id, text)) || changed;
           }
-        } finally { if (changed) this.events.change(id); }
+        } finally { if (changed && !job.cancelled) this.events.change(id); }
         before = batch.at(-1);
         await setImmediate();
       }

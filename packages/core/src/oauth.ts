@@ -25,7 +25,7 @@ const tokenSchema = z.object({ access_token: z.string().min(1).regex(/^[^\x00-\x
   expires_in: z.number().positive().finite(), refresh_token: z.string().min(1).optional(), scope: z.string().optional() });
 
 export class OAuthManager {
-  private refreshing = new Map<string, Promise<string>>();
+  private refreshing = new Map<string, { work: Promise<string>; signal?: AbortSignal }>();
   readonly proxies: ProxySettings;
   constructor(private store: MailStore, private vault: Vault, readonly endpoints: OAuthEndpoints = oauthProviders) {
     this.proxies = new ProxySettings(store, vault);
@@ -63,20 +63,23 @@ export class OAuthManager {
     if (!account) throw new Error('邮箱不存在');
     return this.vault.decrypt<AccountConfig>(account.encryptedConfig);
   }
-  accessToken(config: AccountConfig, accountId?: string): Promise<string> {
+  accessToken(config: AccountConfig, accountId?: string, signal?: AbortSignal): Promise<string> {
+    if (signal?.aborted) return Promise.reject(signal.reason);
     const proxy = this.proxies.resolve(config);
-    if (!accountId) return this.refresh({ ...config, proxy });
+    if (!accountId) return this.refresh({ ...config, proxy }, undefined, signal);
     const pending = this.refreshing.get(accountId);
-    if (pending) return pending;
-    const work = this.refresh({ ...this.accountConfig(accountId), proxy }, accountId).finally(() => this.refreshing.delete(accountId));
-    this.refreshing.set(accountId, work);
+    if (pending && !pending.signal?.aborted) return pending.work;
+    const work = this.refresh({ ...this.accountConfig(accountId), proxy }, accountId, signal).finally(() => {
+      if (this.refreshing.get(accountId)?.work === work) this.refreshing.delete(accountId);
+    });
+    this.refreshing.set(accountId, { work, signal });
     return work;
   }
-  async exchange(provider: OAuthProvider, client: OAuthClient, params: URLSearchParams, proxy?: string) {
+  async exchange(provider: OAuthProvider, client: OAuthClient, params: URLSearchParams, proxy?: string, signal?: AbortSignal) {
     params.set('client_id', client.clientId);
     if (provider === 'microsoft') params.set('scope', this.endpoints[provider].scopes.join(' '));
     if (client.clientSecret) params.set('client_secret', client.clientSecret);
-    const response = await tokenRequest(this.endpoints[provider].token, params, proxy);
+    const response = await tokenRequest(this.endpoints[provider].token, params, proxy, signal);
     if (response.error) throw new Error(response.error === 'invalid_grant' ? '邮箱授权已过期或被撤销，请到邮箱设置重新授权'
       : response.error === 'invalid_client' || response.error === 'unauthorized_client' ? 'OAuth 客户端被拒绝，请检查客户端设置或换用自己的客户端'
       : '邮件服务商拒绝了授权请求，请重新授权并确认邮件权限');
@@ -94,12 +97,14 @@ export class OAuthManager {
     const encrypted = this.store.getSetting(`oauth-client-${provider}`);
     return encrypted ? this.vault.decrypt<OAuthClientInput | null>(encrypted) : null;
   }
-  private async refresh(config: AccountConfig, accountId?: string) {
+  private async refresh(config: AccountConfig, accountId?: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     const oauth = config.oauth;
     if (!oauth) throw new Error('此邮箱未使用 OAuth，请重新连接');
     if (oauth.expiresAt > Date.now() + 60_000) return oauth.accessToken;
     const params = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: oauth.refreshToken });
-    const token = await this.exchange(oauth.provider, oauth.client, params, config.proxy);
+    const token = await this.exchange(oauth.provider, oauth.client, params, config.proxy, signal);
+    signal?.throwIfAborted();
     Object.assign(oauth, token, { refreshToken: token.refreshToken ?? oauth.refreshToken });
     if (accountId) {
       const current = this.accountConfig(accountId);
@@ -113,12 +118,12 @@ export class OAuthManager {
   }
 }
 
-async function tokenRequest(endpoint: string, params: URLSearchParams, proxy?: string): Promise<Record<string, unknown>> {
+async function tokenRequest(endpoint: string, params: URLSearchParams, proxy?: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
   const agent = proxy ? new ProxyAgent({ getProxyForUrl: () => proxy }) : undefined;
   try {
     return await new Promise((resolve, reject) => {
       const request = (endpoint.startsWith('https:') ? httpsRequest : httpRequest)(endpoint, {
-        method: 'POST', agent, signal: AbortSignal.timeout(20_000),
+        method: 'POST', agent, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
       }, response => {
         const chunks: Buffer[] = []; let size = 0;
@@ -137,7 +142,7 @@ async function tokenRequest(endpoint: string, params: URLSearchParams, proxy?: s
           } catch { reject(new Error('邮件服务商的授权响应无法读取，请稍后重试')); }
         });
       });
-      request.on('error', () => reject(new Error('无法连接授权服务器，请检查账号代理和网络后重试')));
+      request.on('error', () => reject(signal?.aborted ? signal.reason : new Error('无法连接授权服务器，请检查账号代理和网络后重试')));
       request.end(params.toString());
     });
   } finally { agent?.destroy(); }

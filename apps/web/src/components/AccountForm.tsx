@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { accountSchema, accountUpdateSchema, detectProvider, providerPresets, type AccountInput, type AccountSettings, type AccountUpdate, type AccountVerification, type AutoConfig } from '@mail/shared';
 import { api, json } from '../api';
@@ -38,6 +38,7 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
   const [clientSource, setClientSource] = useState(settings?.oauth ? 'saved' : 'automatic');
   const [authorization, setAuthorization] = useState<OAuthStarted | null>(null);
   const [authorizing, setAuthorizing] = useState(false);
+  const verificationRequest = useRef<AbortController | null>(null);
   const detected = detectProvider(email);
   const provider = providerId === 'auto' ? detected : providerPresets.find(item => item.id === providerId);
   const preset = providerId === 'discovered' ? discovered : provider;
@@ -52,8 +53,10 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
   function saved(id: string) { query.removeQueries({ queryKey: ['account-settings', accountId] }); void query.invalidateQueries(); onSaved?.(id); onClose(); }
   const save = useMutation({ mutationFn: (input: AccountInput | AccountUpdate) => api<{ id?: string }>(accountId ? `/accounts/${accountId}` : '/accounts', json(accountId ? 'PUT' : 'POST', input)),
     onSuccess: result => { const id = accountId ?? result.id; if (id) saved(id); } });
-  const verify = useMutation({ mutationFn: (input: AccountUpdate) => api<AccountVerification>(`/accounts/${accountId}/verify`, json('POST', input)) });
-  const busy = save.isPending || start.isPending || verify.isPending;
+  const verify = useMutation({ mutationFn: ({ input, signal }: { input: AccountUpdate; signal: AbortSignal }) => api<AccountVerification>(`/accounts/${accountId}/verify`, { ...json('POST', input), signal }) });
+  const busy = save.isPending || start.isPending;
+  useEffect(() => () => { verificationRequest.current?.abort(); }, []);
+  function cancelVerification() { verificationRequest.current?.abort(); verificationRequest.current = null; verify.reset(); }
   const discover = useMutation({ mutationFn: (address: string) => api<{ config: AutoConfig | null }>('/autoconfig', json('POST', { email: address.trim() })),
     onSuccess: ({ config }, address) => {
       if (email.trim().toLowerCase() !== address.trim().toLowerCase()) return;
@@ -62,7 +65,7 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
     } });
   function submit(element: HTMLFormElement, action: 'save' | 'verify' | 'authorize' | 'connect') {
     const form = new FormData(element);
-    save.reset(); verify.reset(); start.reset();
+    save.reset(); cancelVerification(); start.reset();
     const value = (key: string) => String(form.get(key) ?? '').trim();
     const password = String(form.get('password') ?? '');
     const server = (protocol: 'imap' | 'smtp') => ({ host: value(`${protocol}Host`), port: Number(value(`${protocol}Port`)), security: value(`${protocol}Security`),
@@ -79,7 +82,11 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
     const parsed = (accountId ? accountUpdateSchema : accountSchema).safeParse(account);
     if (!parsed.success) { setServersOpen(true); setError(describeIssues(parsed.error.issues, labels)); return; }
     setError('');
-    if (action === 'verify') verify.mutate(parsed.data); else save.mutate(parsed.data);
+    if (action === 'verify') {
+      const controller = new AbortController();
+      verificationRequest.current = controller;
+      verify.mutate({ input: parsed.data, signal: controller.signal });
+    } else save.mutate(parsed.data);
   }
   const presetKey = `${providerId}:${preset?.name ?? ''}:${providerId === 'discovered' ? discoveryVersion : 0}`;
   const proxyFields = <>
@@ -89,25 +96,21 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
     {proxyMode === 'global' && <p className="hint">{globalProxy.isPending ? '正在读取全局代理…' : globalProxy.error ? globalProxy.error.message
       : globalProxy.data?.display ? `当前全局代理：${globalProxy.data.display}` : '全局未设置代理，将直接连接。'}</p>}
     <label style={proxyMode !== 'custom' ? { display: 'none' } : undefined}>独立代理地址<input name="proxy" placeholder={settings?.proxyDisplay ? `留空保留 ${settings.proxyDisplay}` : 'http://127.0.0.1:7890 或 socks5://127.0.0.1:1080'} /></label>
-    {oauthProvider && <p className="hint">收发信和换取令牌使用此代理。授权页由浏览器打开，浏览器的代理需自行设置。</p>}
   </>;
-  return <Modal title={accountId ? '邮箱设置' : '连接邮箱'} description={accountId ? '更换收信服务器或登录名会重新同步本地邮件索引，草稿保留。' : '通过 IMAP 和 SMTP 连接，邮件保存在运行信屿的主机上。'} onClose={() => { if (!busy && !authorizing) onClose(); }} wide>
+  return <Modal title={accountId ? '邮箱设置' : '连接邮箱'} onClose={() => { if (!busy && !authorizing) { cancelVerification(); onClose(); } }} wide>
     {authorization && <OAuthAuthorization session={authorization} onSaved={saved} onBusy={setAuthorizing} onCancel={() => { setAuthorization(null); start.reset(); }} />}
-    <form onSubmit={event => { event.preventDefault(); submit(event.currentTarget, accountId ? 'save' : 'connect'); }} onChange={() => verify.reset()} className="account-form" noValidate style={authorization ? { display: 'none' } : undefined}><fieldset className="form-fields" disabled={busy}>
+    <form onSubmit={event => { event.preventDefault(); submit(event.currentTarget, accountId ? 'save' : 'connect'); }} onChange={cancelVerification} className="account-form" noValidate style={authorization ? { display: 'none' } : undefined}><fieldset className="form-fields" disabled={busy}>
       <div className="form-grid"><label>邮箱地址<input name="email" type="email" required autoFocus value={email} onChange={event => setEmail(event.target.value)} placeholder="you@example.com" /></label><label>显示名称（选填）<input name="name" defaultValue={settings?.name} placeholder={preset?.name ?? '例如：工作邮箱'} /></label></div>
       <div className="account-channels" role="group" aria-label="邮箱用途">
         <label className="checkbox-label"><input type="checkbox" checked={receiveEnabled} onChange={event => setReceiveEnabled(event.target.checked)} />收信</label>
         <label className="checkbox-label"><input type="checkbox" checked={sendEnabled} onChange={event => setSendEnabled(event.target.checked)} />发信</label>
       </div>
-      <p className="hint">{accountId ? '校验仅检查已启用的收发信。' : receiveEnabled ? sendEnabled ? '收信成功即可添加，发信在发送时检查。' : '只检查收信，不连接发信服务器。' : sendEnabled ? '只检查发信，不连接收信服务器。' : '请至少开启收信或发信。'}</p>
-      {!receiveEnabled && sendEnabled && <p className="hint">仅发信时，信屿不保存已发送副本；原邮箱是否自动保存由服务商决定。</p>}
       <label>邮箱服务商<select value={providerId} onChange={event => { setProviderId(event.target.value); setServersOpen(null); setError(''); save.reset(); setAuthMode(settings?.oauth ? 'oauth' : 'auto'); setClientSource('automatic'); }}>
         <option value="auto">自动识别{detected ? `：${detected.name}` : ''}</option>{providerPresets.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
         {discovered && <option value="discovered">在线配置：{discovered.name}</option>}<option value="custom">其他（手动填写服务器）</option>
       </select></label>
-      <div className="discovery-row"><Button type="button" onClick={() => discover.mutate(email)} disabled={!email || discover.isPending}>{discover.isPending ? '正在查询…' : '在线查找服务器'}</Button><span className="hint">只向 Thunderbird 配置库查询邮箱域名。</span></div>
-      {providerHints && <div className="provider-note" role="status"><strong>{providerHints.name}</strong><p>{providerHints.hint} <a href={providerHints.helpUrl} target="_blank" rel="noreferrer">查看帮助 ↗</a></p></div>}
-      {providerId === 'discovered' && discovered && <p className="provider-note">已从 ISPDB 填入配置，请核对下方服务器。{blocked && '此服务商的 OAuth 暂不支持。'}</p>}
+      <div className="discovery-row"><Button type="button" onClick={() => discover.mutate(email)} disabled={!email || discover.isPending}>{discover.isPending ? '正在查询…' : '在线查找服务器'}</Button>{providerHints && <a className="link-button" href={providerHints.helpUrl} target="_blank" rel="noreferrer">服务商帮助 ↗</a>}</div>
+      {blocked && <p className="error" role="alert">此服务商的 OAuth 暂不支持。</p>}
       {!useOAuth && !blocked && <label>{providerHints?.passwordLabel ?? '密码或授权码'}{accountId && '（留空不改）'}<input name="password" type="password" autoComplete="new-password" required={!accountId} placeholder={accountId ? '填写后同时更新收发信密码，发信可在下方另填' : ''} /></label>}
       {/* Google and Microsoft are often only reachable through a proxy, so for them the field is not tucked away below. */}
       {oauthProvider && proxyFields}
@@ -129,18 +132,16 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
         {useOAuth && oauthProvider && <div className="account-oauth-settings">
           <h3>OAuth 授权</h3>
           <OAuthClientFields provider={oauthProvider} source={clientSource} onSource={setClientSource} saved={settings?.oauth?.client} clients={clients.data} />
-          {accountId && <><p className="hint">保存和校验会沿用已保存的授权。更换授权应用后，请点击下方按钮。</p>
-            <div><Button type="button" disabled={!clients.data} onClick={event => submit(event.currentTarget.form!, 'authorize')}>{settings?.oauth ? '重新授权' : '使用 OAuth 授权'}</Button></div></>}
+          {accountId && <div><Button type="button" disabled={!clients.data} onClick={event => submit(event.currentTarget.form!, 'authorize')}>{settings?.oauth ? '重新授权' : '使用 OAuth 授权'}</Button></div>}
         </div>}
       </details>
     </fieldset>
     {(error || save.error || verify.error || discover.error || start.error || clients.error) && <p className="error" role="alert">{error || save.error?.message || verify.error?.message || discover.error?.message || start.error?.message || clients.error?.message}</p>}
     {verify.data && <div className="connection-check" role="status">
       {(['imap', 'smtp'] as const).map(protocol => <p key={protocol} className={`connection-check-${verify.data[protocol].status}`}><strong>{protocol === 'imap' ? '收信（IMAP）' : '发信（SMTP）'}：</strong>{verify.data[protocol].status === 'success' ? '连接正常' : verify.data[protocol].status === 'disabled' ? '未开启' : verify.data[protocol].error}</p>)}
-      <p className="hint">本次仅校验连接，未保存设置。</p>
     </div>}
-    <div className="form-footer"><span className="hint">{accountId ? '保存设置不会校验连接。' : receiveEnabled ? '检查收信后添加，凭据加密存储。' : '检查发信后添加，凭据加密存储。'}</span>
-      <div className="button-row">{accountId && <Button type="button" disabled={busy} onClick={event => submit(event.currentTarget.form!, 'verify')}>{verify.isPending ? '正在校验…' : '校验连接'}</Button>}
+    <div className="form-footer account-form-actions">
+      <div className="button-row">{accountId && <Button type="button" disabled={busy} onClick={event => { if (verify.isPending) cancelVerification(); else submit(event.currentTarget.form!, 'verify'); }}>{verify.isPending ? '取消校验' : '校验连接'}</Button>}
       <Button type="submit" variant="primary" disabled={busy || (!accountId && (blocked || (useOAuth && !clients.data)))}>{save.isPending ? '正在保存…' : start.isPending ? '正在处理…' : accountId ? '保存设置' : blocked ? '暂不支持' : useOAuth ? '开始 OAuth 授权' : '连接'}</Button></div></div>
     </form>
   </Modal>;

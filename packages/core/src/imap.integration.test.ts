@@ -190,7 +190,8 @@ describe('real GreenMail IMAP / SMTP round trip', () => {
         await adapter.connect();
         await adapter.source(folder, initial.uids[0]);
         expect(connect).not.toHaveBeenCalled();
-        await adapter.close();
+        // A dropped transport reconnects; an explicitly cancelled adapter is retired.
+        (adapter as unknown as { client: ImapFlow }).client.close();
         await adapter.connect();
         await adapter.source(folder, initial.uids[0]);
         expect(connect).toHaveBeenCalledOnce();

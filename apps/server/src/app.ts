@@ -143,7 +143,7 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     await service.updateAccount(c.req.param('id'), await readAccountUpdate(c, service));
     return c.json({ ok: true });
   });
-  app.post('/api/accounts/:id/verify', async c => c.json(await service.verifyAccountSettings(c.req.param('id'), await readAccountUpdate(c, service))));
+  app.post('/api/accounts/:id/verify', async c => c.json(await service.verifyAccountSettings(c.req.param('id'), await readAccountUpdate(c, service), c.req.raw.signal)));
   app.post('/api/autoconfig', async c => {
     const parsed = discoverySchema.safeParse(await readJson(c));
     if (!parsed.success) return c.json({ error: '请输入有效邮箱地址' }, 400);

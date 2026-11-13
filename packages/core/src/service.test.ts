@@ -37,7 +37,7 @@ beforeEach(async () => {
   messageId = (store.sqlite.prepare('SELECT id FROM messages').get() as { id: string }).id;
   adapter = serverAdapter();
   factory = vi.fn(() => adapter);
-  service = new MailService(store, vault, new BodyCache(directory), factory, new UploadStore(store, join(directory, 'uploads')));
+  service = new MailService(store, vault, new BodyCache(directory), factory, new UploadStore(store, join(directory, 'uploads')), undefined, { cleanupMs: 40, verifyMs: 40 });
 });
 afterEach(async () => { await service.stop(); store.close(); await rm(directory, { recursive: true, force: true }); });
 
@@ -145,6 +145,115 @@ it('checks unsaved receive and send settings independently without replacing sto
   expect(candidate.connect).toHaveBeenCalledOnce(); expect(candidate.verifySmtp).toHaveBeenCalledOnce(); expect(candidate.close).toHaveBeenCalledOnce();
   expect(store.account(accountId)?.encryptedConfig).toBe(before); expect(store.message(messageId)).toBeDefined();
   expect(adapter.close).not.toHaveBeenCalled();
+});
+
+it('persists consecutive saves while an old flag operation is stuck, then ignores its late acknowledgement', async () => {
+  const entered = deferred(); const release = deferred();
+  const replacement = serverAdapter();
+  adapter.flags.mockImplementationOnce(async () => { entered.resolve(); await release.promise; });
+  const marking = service.flags(messageId, { seen: true }).catch(error => error);
+  await entered.promise;
+  factory.mockImplementation(() => replacement);
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    const first = service.updateAccount(accountId, accountUpdateSchema.parse({ ...service.accountSettings(accountId), name: '第一次保存' }));
+    expect(store.account(accountId)?.name).toBe('第一次保存');
+    const second = service.updateAccount(accountId, accountUpdateSchema.parse({ ...service.accountSettings(accountId), name: '第二次保存' }));
+    expect(store.account(accountId)?.name).toBe('第二次保存');
+    await Promise.all([first, second]);
+    expect((await marking).status).toBe(409);
+    await service.sync(accountId);
+    await vi.waitFor(() => expect(warning).toHaveBeenCalledWith('[account-work]', expect.objectContaining({ phase: 'cleanup-timeout', pending: expect.arrayContaining(['flags']), elapsedMs: expect.any(Number) })));
+    release.resolve(); await new Promise(resolve => setImmediate(resolve));
+    expect(store.message(messageId)?.seen).toBe(false);
+    expect(store.account(accountId)?.name).toBe('第二次保存');
+    expect(replacement.connect).toHaveBeenCalled();
+  } finally { release.resolve(); warning.mockRestore(); }
+});
+
+it('switches after a bounded wait for an old sync and rejects late batches and status writes', async () => {
+  const entered = deferred(); const release = deferred();
+  adapter.sync.mockImplementationOnce(async (_folder, sink) => {
+    entered.resolve(); await release.promise;
+    sink.messages([record(99, { subject: '旧配置迟到的邮件' })]);
+    throw new Error('旧同步错误');
+  });
+  const oldSync = service.sync(accountId);
+  await entered.promise;
+  const replacement = serverAdapter(); factory.mockImplementation(() => replacement);
+  try {
+    const saving = service.updateAccount(accountId, accountUpdateSchema.parse({ ...service.accountSettings(accountId), name: '新配置' }));
+    expect(store.account(accountId)?.name).toBe('新配置'); await saving;
+    await service.sync(accountId);
+    release.resolve(); await oldSync; await new Promise(resolve => setImmediate(resolve));
+    expect(store.folderUids(inbox.id)).toEqual([1]);
+    expect(store.account(accountId)?.error).toBeNull();
+    expect(replacement.sync).toHaveBeenCalled();
+    expect(factory.mock.calls.at(-1)![0].name).toBe('新配置');
+  } finally { release.resolve(); }
+});
+
+it('saves before a stuck prefetch close completes and starts fresh work without accepting the old body', async () => {
+  const background = serverAdapter(); const replacement = serverAdapter();
+  const entered = deferred(); const releaseFetch = deferred(); const releaseClose = deferred();
+  background.bodyText.mockImplementation(async () => { entered.resolve(); await releaseFetch.promise; return '已取消的旧正文'; });
+  background.close.mockImplementation(() => releaseClose.promise);
+  factory.mockImplementationOnce(() => adapter).mockImplementationOnce(() => background).mockImplementation(() => replacement);
+  service.start();
+  await entered.promise;
+  try {
+    const saving = service.updateAccount(accountId, accountUpdateSchema.parse({ ...service.accountSettings(accountId), name: '不等待预取' }));
+    expect(store.account(accountId)?.name).toBe('不等待预取'); await saving;
+    await service.sync(accountId);
+    await vi.waitFor(() => expect(store.message(messageId)?.preview).toBe('后台索引正文'));
+    releaseFetch.resolve(); releaseClose.resolve(); await new Promise(resolve => setImmediate(resolve));
+    expect(store.message(messageId)?.preview).toBe('后台索引正文');
+    expect(replacement.connect).toHaveBeenCalled();
+  } finally { releaseFetch.resolve(); releaseClose.resolve(); }
+});
+
+it('returns a verification timeout even when both protocols and close never finish', async () => {
+  const release = deferred();
+  adapter.connect.mockImplementation(() => release.promise);
+  adapter.verifySmtp.mockImplementation(() => release.promise);
+  adapter.close.mockImplementation(() => release.promise);
+  const before = store.account(accountId)!.encryptedConfig;
+  try {
+    const result = await service.verifyAccountSettings(accountId, accountUpdateSchema.parse(service.accountSettings(accountId)));
+    expect(result).toEqual({ imap: { status: 'error', error: '校验连接超时，请重试' }, smtp: { status: 'error', error: '校验连接超时，请重试' } });
+    expect(store.account(accountId)?.encryptedConfig).toBe(before);
+  } finally { release.resolve(); }
+});
+
+it('cancels a hung verification when saving without waiting for it or overwriting the saved settings', async () => {
+  const release = deferred(); const replacement = serverAdapter();
+  adapter.connect.mockImplementation(() => release.promise); adapter.verifySmtp.mockImplementation(() => release.promise);
+  const checking = service.verifyAccountSettings(accountId, accountUpdateSchema.parse(service.accountSettings(accountId)));
+  factory.mockImplementation(() => replacement);
+  try {
+    await service.updateAccount(accountId, accountUpdateSchema.parse({ ...service.accountSettings(accountId), name: '校验中保存' }));
+    expect(store.account(accountId)?.name).toBe('校验中保存');
+    const result = await checking;
+    expect(result.imap).toMatchObject({ status: 'error', error: expect.stringContaining('设置已变更') });
+    expect(result.smtp.status).toBe('error');
+  } finally { release.resolve(); }
+});
+
+it('preserves SMTP acceptance after settings change without replaying or rewriting the draft', async () => {
+  const draft = await service.saveDraft(undefined, draftSchema.parse({ accountId, subject: '正在发送', text: 'test' }));
+  const entered = deferred(); const release = deferred();
+  adapter.send.mockImplementationOnce(async () => { entered.resolve(); await release.promise; return { messageId: '<accepted>' }; });
+  const sending = service.send(sendSchema.parse({ accountId, draftId: draft.id, to: ['bob@example.com'], subject: draft.subject, text: draft.text }));
+  await entered.promise;
+  const replacement = serverAdapter(); factory.mockImplementation(() => replacement);
+  try {
+    await service.updateAccount(accountId, accountUpdateSchema.parse({ ...service.accountSettings(accountId), name: '发送中保存' }));
+    release.resolve();
+    const result = await sending;
+    expect(result).toMatchObject({ messageId: '<accepted>', warning: expect.stringContaining('请勿重复发送') });
+    expect(store.draft(draft.id)).toBeDefined();
+    expect(adapter.send).toHaveBeenCalledOnce(); expect(replacement.send).not.toHaveBeenCalled();
+  } finally { release.resolve(); }
 });
 
 it.each(['imap', 'smtp'] as const)('does not verify the disabled %s channel', async disabled => {

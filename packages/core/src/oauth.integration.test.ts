@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { createServer, request } from 'node:http';
+import { createServer, request, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
-import type { AddressInfo } from 'node:net';
+import { createServer as createSocketServer, type AddressInfo } from 'node:net';
 import type { OAuthProvider } from '@mail/shared';
 import { accountConfig, database } from '../../../tests/fixtures';
 import { callbackUrl, oauthServer } from '../../../tests/oauth-server';
@@ -92,6 +92,54 @@ it('coalesces concurrent refreshes, persists rotation across restart, and keeps 
   expect(provider.requests[2].get('refresh_token')).toBe('refresh-2');
 });
 
+it('cancels a frozen token request and keeps the next configuration refresh independent', async () => {
+  const id = await authorize();
+  const config = manager.accountConfig(id); config.oauth!.expiresAt = 0; store.updateAccountCredentials(id, vault.encrypt(config));
+  let requests = 0; let oldClosed = false; let nextResponse!: ServerResponse;
+  let firstEntered!: () => void; let nextEntered!: () => void;
+  const firstReady = new Promise<void>(resolve => { firstEntered = resolve; });
+  const nextReady = new Promise<void>(resolve => { nextEntered = resolve; });
+  const endpoint = createServer((request, response) => {
+    request.resume(); requests++;
+    if (requests === 1) { response.once('close', () => { oldClosed = true; }); firstEntered(); }
+    else { nextResponse = response; nextEntered(); }
+  });
+  endpoint.listen(0, '127.0.0.1'); await once(endpoint, 'listening');
+  const token = `http://127.0.0.1:${(endpoint.address() as AddressInfo).port}/token`;
+  manager = new OAuthManager(store, vault, { ...provider.endpoints, google: { ...provider.endpoints.google, token } });
+  const old = new AbortController(); const current = new AbortController();
+  try {
+    const oldRequest = manager.accessToken(config, id, old.signal).catch(error => error);
+    await firstReady;
+    old.abort(new Error('retired configuration'));
+    const fresh = manager.accessToken(config, id, current.signal);
+    expect((await oldRequest).message).toBe('retired configuration');
+    await nextReady;
+    const concurrent = manager.accessToken(config, id, current.signal);
+    nextResponse.end(JSON.stringify({ token_type: 'Bearer', access_token: 'new-access', refresh_token: 'new-refresh', expires_in: 3600 }));
+    expect(await Promise.all([fresh, concurrent])).toEqual(['new-access', 'new-access']);
+    expect(requests).toBe(2); expect(oldClosed).toBe(true);
+    expect(manager.accountConfig(id).oauth?.refreshToken).toBe('new-refresh');
+  } finally { old.abort(); current.abort(); endpoint.closeAllConnections(); await new Promise<void>(resolve => endpoint.close(() => resolve())); }
+});
+
+it('closes the actual SMTP socket when verification is cancelled before the greeting', async () => {
+  let accepted!: () => void; let disconnected!: () => void;
+  const ready = new Promise<void>(resolve => { accepted = resolve; });
+  const closed = new Promise<void>(resolve => { disconnected = resolve; });
+  const server = createSocketServer(socket => { socket.on('error', () => {}); socket.on('close', disconnected); accepted(); });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const config = accountConfig(); config.smtp.port = (server.address() as AddressInfo).port;
+  const controller = new AbortController(); const adapter = new ImapAdapter(config, undefined, undefined, controller.signal);
+  try {
+    const verifying = adapter.verifySmtp().catch(error => error);
+    await ready; controller.abort();
+    expect(await verifying).toBeInstanceOf(Error);
+    await closed;
+    await expect(adapter.connect()).rejects.toThrow('已关闭');
+  } finally { await adapter.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
 it('reports revoked consent without leaking server details or overwriting the stored token', async () => {
   const id = await authorize();
   const config = manager.accountConfig(id); config.oauth!.expiresAt = 0; store.updateAccountCredentials(id, vault.encrypt(config));
@@ -129,12 +177,14 @@ it('uses fresh XOAUTH2 on IMAP reconnect, IDLE and SMTP, without replaying a rej
   const config = manager.accountConfig(id);
   config.imap.port = mail.imapPort; config.smtp.port = mail.smtpPort; config.sentCopy = 'server'; config.oauth!.expiresAt = 0;
   store.updateAccountCredentials(id, vault.encrypt(config));
-  const adapter = new ImapAdapter(config, undefined, () => manager.accessToken(config, id));
+  let adapter = new ImapAdapter(config, undefined, () => manager.accessToken(config, id));
   let stopWatch: (() => void) | undefined;
   try {
     await adapter.connect(); await adapter.verifySmtp();
     stopWatch = await adapter.watchInbox(() => {}, () => {});
-    await adapter.close(); await adapter.connect();
+    await adapter.close();
+    adapter = new ImapAdapter(config, undefined, () => manager.accessToken(config, id));
+    await adapter.connect();
     const send = sendSchema.parse({ accountId: id, to: ['local-test@example.com'], subject: 'OAuth fixture', text: 'Only sent to the local fixture.' });
     await adapter.send(send);
     expect(mail.messages).toHaveLength(1);

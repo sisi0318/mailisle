@@ -278,6 +278,7 @@ legend{font-size:13px;padding:0 6px;color:var(--text-2)}
 .modal-heading .button{padding:6px;min-height:0}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .account-form,.composer{display:flex;flex-direction:column;gap:14px}
+.account-form .account-form-actions{justify-content:flex-end}
 .label-row{display:flex;justify-content:space-between;align-items:center}
 .provider-note{padding:11px 14px;border-radius:8px;background:var(--success-soft);color:var(--success-ink);font-size:13px;line-height:1.7}
 .provider-note strong{display:block;font-weight:600}
