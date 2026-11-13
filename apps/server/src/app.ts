@@ -140,17 +140,10 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     return c.json(service.accountSettings(c.req.param('id')));
   });
   app.put('/api/accounts/:id', async c => {
-    if (!service.store.account(c.req.param('id'))) return c.json({ error: '邮箱不存在' }, 404);
-    const parsed = accountUpdateSchema.safeParse(await readJson(c));
-    if (!parsed.success) return c.json({ error: parsed.error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('；') }, 400);
-    const oauth = service.accountSettings(c.req.param('id')).oauth;
-    if (oauth) {
-      const oauthInput = oauthStartSchema.safeParse({ accountId: c.req.param('id'), account: parsed.data, provider: oauth.provider, client: { source: 'saved' } });
-      if (!oauthInput.success) return c.json({ error: oauthInput.error.issues[0].message }, 400);
-    }
-    await service.updateAccount(c.req.param('id'), parsed.data);
+    await service.updateAccount(c.req.param('id'), await readAccountUpdate(c, service));
     return c.json({ ok: true });
   });
+  app.post('/api/accounts/:id/verify', async c => c.json(await service.verifyAccountSettings(c.req.param('id'), await readAccountUpdate(c, service))));
   app.post('/api/autoconfig', async c => {
     const parsed = discoverySchema.safeParse(await readJson(c));
     if (!parsed.success) return c.json({ error: '请输入有效邮箱地址' }, 400);
@@ -305,6 +298,19 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     return c.json({ error: publicError(error) }, status);
   });
   return app;
+}
+
+async function readAccountUpdate(c: Context, service: MailService) {
+  const id = c.req.param('id')!;
+  if (!service.store.account(id)) throw new UserError('邮箱不存在', 404);
+  const parsed = accountUpdateSchema.safeParse(await readJson(c));
+  if (!parsed.success) throw new UserError(parsed.error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('；'), 400);
+  const oauth = service.accountSettings(id).oauth;
+  if (oauth) {
+    const oauthInput = oauthStartSchema.safeParse({ accountId: id, account: parsed.data, provider: oauth.provider, client: { source: 'saved' } });
+    if (!oauthInput.success) throw new UserError(oauthInput.error.issues[0].message, 400);
+  }
+  return parsed.data;
 }
 
 /** Reads a JSON request body. A SyntaxError from anywhere else is a fault in the server, not in the request. */

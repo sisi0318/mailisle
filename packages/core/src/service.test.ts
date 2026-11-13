@@ -122,16 +122,38 @@ it('hides saved passwords and proxy credentials, and preserves blank secrets dur
   expect(store.message(messageId)).toBeDefined();
 });
 
-it('does not replace a working account when validation of new credentials fails', async () => {
+it('saves settings even when the next background IMAP connection fails', async () => {
   await service.sync(accountId);
   const candidate = serverAdapter();
   candidate.connect.mockRejectedValueOnce(new Error('bad IMAP credentials'));
   factory.mockImplementationOnce(() => candidate);
+  await service.updateAccount(accountId, accountUpdateSchema.parse({ ...service.accountSettings(accountId), name: '离线保存' }));
+  await service.sync(accountId);
+  expect(store.account(accountId)?.name).toBe('离线保存');
+  expect(candidate.verifySmtp).not.toHaveBeenCalled();
+  expect(store.message(messageId)).toBeDefined(); expect(adapter.close).toHaveBeenCalledOnce();
+});
+
+it('checks unsaved receive and send settings independently without replacing stored settings or the active connection', async () => {
+  await service.sync(accountId);
+  const candidate = serverAdapter(); candidate.verifySmtp.mockRejectedValue(new Error('SMTP unavailable'));
+  factory.mockImplementationOnce(() => candidate);
   const before = store.account(accountId)!.encryptedConfig;
-  await expect(service.updateAccount(accountId, accountUpdateSchema.parse({ ...service.accountSettings(accountId), name: '失败设置' }))).rejects.toThrow('IMAP');
-  expect(store.account(accountId)?.encryptedConfig).toBe(before);
-  expect(store.message(messageId)).toBeDefined(); expect(candidate.close).toHaveBeenCalledOnce();
+  const result = await service.verifyAccountSettings(accountId, accountUpdateSchema.parse({ ...service.accountSettings(accountId), name: '未保存名称', smtp: { ...service.accountSettings(accountId).smtp, port: 587 } }));
+  expect(result).toMatchObject({ imap: { status: 'success' }, smtp: { status: 'error' } });
+  expect(factory.mock.calls.at(-1)![0]).toMatchObject({ name: '未保存名称', smtp: { port: 587, password: 'test-password' } });
+  expect(candidate.connect).toHaveBeenCalledOnce(); expect(candidate.verifySmtp).toHaveBeenCalledOnce(); expect(candidate.close).toHaveBeenCalledOnce();
+  expect(store.account(accountId)?.encryptedConfig).toBe(before); expect(store.message(messageId)).toBeDefined();
   expect(adapter.close).not.toHaveBeenCalled();
+});
+
+it.each(['imap', 'smtp'] as const)('does not verify the disabled %s channel', async disabled => {
+  const candidate = serverAdapter(); factory.mockImplementationOnce(() => candidate);
+  const input = accountUpdateSchema.parse({ ...service.accountSettings(accountId), receiveEnabled: disabled !== 'imap', sendEnabled: disabled !== 'smtp' });
+  const result = await service.verifyAccountSettings(accountId, input);
+  expect(result[disabled].status).toBe('disabled');
+  expect(result[disabled === 'imap' ? 'smtp' : 'imap'].status).toBe('success');
+  expect(disabled === 'imap' ? candidate.connect : candidate.verifySmtp).not.toHaveBeenCalled();
 });
 
 it('rebuilds mailbox mappings after changing IMAP identity while retaining local drafts', async () => {
@@ -190,7 +212,7 @@ it('stops receiving after changing modes while keeping cached mail readable', as
   const candidate = serverAdapter(); factory.mockImplementationOnce(() => candidate);
   await service.updateAccount(accountId, accountUpdateSchema.parse({ ...service.accountSettings(accountId), receiveEnabled: false }));
   await service.sync(accountId);
-  expect(adapter.close).toHaveBeenCalledOnce(); expect(candidate.verifySmtp).toHaveBeenCalledOnce();
+  expect(adapter.close).toHaveBeenCalledOnce(); expect(candidate.verifySmtp).not.toHaveBeenCalled();
   expect(candidate.connect).not.toHaveBeenCalled(); expect(candidate.sync).not.toHaveBeenCalled();
   expect(store.message(messageId)).toBeDefined(); expect((await service.body(messageId)).text).toContain('缓存正文');
   await expect(service.flags(messageId, { seen: true })).rejects.toThrow('关闭收信');

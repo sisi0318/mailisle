@@ -401,6 +401,12 @@ legend{font-size:13px;padding:0 6px;color:var(--text-2)}
 .oauth-client-fields, .oauth-authorization { display: grid; gap: 14px; }
 .oauth-authorization textarea { min-height: 100px; overflow-wrap: anywhere; }
 .oauth-authorization .advanced p { margin: 12px 0; }
+.account-oauth-settings{display:grid;gap:12px;border-top:1px solid var(--line);padding-top:14px}
+.account-oauth-settings h3{font-size:14px;font-weight:600}
+.connection-check{display:grid;gap:8px;padding:12px;border:1px solid var(--line-strong);border-radius:7px;font-size:13px;overflow-wrap:anywhere}
+.connection-check-success{color:var(--success-ink)}
+.connection-check-error{color:var(--danger-ink)}
+.connection-check-disabled{color:var(--text-3)}
 .settings-menu{display:grid;gap:10px}
 .settings-menu>button{display:flex;align-items:center;gap:14px;width:100%;padding:16px;border:1px solid var(--line-strong);border-radius:8px;background:var(--panel);text-align:left}
 .settings-menu>button:hover{background:var(--hover);border-color:var(--accent)}

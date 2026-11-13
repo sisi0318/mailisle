@@ -5,10 +5,10 @@
 ## 账号与服务器配置
 
 - 添加账号时可自动识别 QQ、163、126、Yeah、Gmail、iCloud、Yahoo、Outlook 的常见邮箱后缀，预填服务器；工作或学校邮箱可手动选择 Microsoft 365。Gmail 可选 OAuth 或应用专用密码，Outlook/Microsoft 365 使用 OAuth。
-- 收信和发信可独立开关，至少开启一项。开启收信时，只检查 IMAP 后保存，SMTP 留到实际发送时检查；仅发信时只检查 SMTP，不连接 IMAP。默认使用 TLS，也支持强制 STARTTLS。本机 Bridge 和测试服务器可以显式选择明文连接，其他主机不允许明文。
+- 收信和发信可独立开关，至少开启一项。首次添加时，开启收信就只检查 IMAP，SMTP 留到实际发送时检查；仅发信时只检查 SMTP，不连接 IMAP。默认使用 TLS，也支持强制 STARTTLS。本机 Bridge 和测试服务器可以显式选择明文连接，其他主机不允许明文。
 - 「在线查找服务器」会向 Thunderbird ISPDB 查询邮箱域名，不发送完整邮箱地址或凭据。只选加密 IMAP/SMTP 配置，未找到或网络失败时保留手动配置入口。
 - 点邮箱标题展开或收起文件夹，一次展开一个邮箱；折叠不切走正在阅读的邮件。「我的邮箱」旁的齿轮打开邮箱管理，可以上下调整顺序、进入设置或删除邮箱。顺序保存在服务端，修改后通知其他设备；新账号排在末尾。
-- 在邮箱管理中进入「邮箱设置」修改参数，原密码和代理认证信息不会回传。密码留空保留；主密码框填入新值会同时更新收发信密码，发信密码可另填。更换收信或发信服务器的地址时必须重新填写密码，已保存的密码不会发往新的服务器。按启用的收发方式检查新配置，通过后再替换连接。更换 IMAP 服务器、端口或登录名会重建该账号的本地邮件索引，本地草稿保留。关闭收信后停止同步及正文预取，已缓存的邮件仍可阅读。
+- 在邮箱管理中进入「邮箱设置」修改参数，原密码和代理认证信息不会回传。密码留空保留；主密码框填入新值会同时更新收发信密码，发信密码可另填。更换收信或发信服务器的地址时必须重新填写密码，已保存的密码不会发往新的服务器。「保存设置」通过输入校验后直接保存，不等待网络校验，随后在后台同步；「校验连接」单独检查当前表单中的 IMAP 和 SMTP，只检查已开启的项，分别报告结果，不保存表单修改。OAuth 令牌到期时仍会正常刷新。「高级设置」默认收起，包含服务器、OAuth 客户端和重新授权；保存及校验沿用已有授权，切换客户端需单独重新授权。更换 IMAP 服务器、端口或登录名会重建该账号的本地邮件索引，本地草稿保留。关闭收信后停止同步及正文预取，已缓存的邮件仍可阅读。
 - IMAP、SMTP 和 OAuth 令牌请求使用邮箱选择的代理方式：继承全局、独立代理或直连。旧账号若已有代理则保持独立，没有代理则默认继承全局；全局未配置时直接连接。代理地址含凭据时加密保存，设置接口只返回主机和端口。修改全局代理只重连继承者。浏览器访问授权页的代理仍由浏览器配置。ImapFlow 启用客户端 ID 信息。
 - 预设参数集中在 `packages/shared/src/providers.ts`，2026-11-10 核对来源：[Thunderbird ISPDB](https://github.com/thunderbird/autoconfig/tree/master/ispdb)、[Google](https://developers.google.com/workspace/gmail/imap/imap-smtp)、[Apple](https://support.apple.com/102525)、[Yahoo](https://help.yahoo.com/kb/SLN4075.html)、[Microsoft](https://support.microsoft.com/en-us/outlook/pop-imap-and-smtp-settings-for-outlook-com)。
 
@@ -19,7 +19,7 @@
 ## OAuth
 
 - 支持 Google 和 Microsoft 的标准邮件端点。授权提供随机端口本机回调和粘贴完整回调地址两种方式，不使用 Google OOB。自定义 Microsoft 客户端的 localhost 回调同时监听 IPv4/IPv6。授权会话有效 10 分钟，绑定当前浏览器登录会话；关闭连接窗口或退出登录会取消授权。
-- 侧栏的「设置」可覆盖服务商默认值，连接邮箱时也可单独指定客户端。预置值集中在 `packages/core/src/oauth-presets.ts`，可直接移除对应条目；授权前明确提示 Mozilla Thunderbird 名称和可能失效的风险。教程：[Google](oauth-google.md)、[Microsoft](oauth-microsoft.md)。
+- 侧栏的「设置」可覆盖服务商默认值，邮箱表单的「高级设置」中也可单独指定客户端。预置值集中在 `packages/core/src/oauth-presets.ts`，可直接移除对应条目；高级设置中注明 Mozilla Thunderbird 来源和可能失效的风险。教程：[Google](oauth-google.md)、[Microsoft](oauth-microsoft.md)。
 - 只申请邮件协议权限和必要的离线访问。客户端 secret、访问令牌、刷新令牌加密保存；访问令牌到期前一分钟刷新，同账号并发刷新合并，轮换后的刷新令牌立即落盘。修改默认客户端后已有账号继续使用授权时的配置，需到「邮箱设置」重新授权才能更换。
 
 ## 同步与连接

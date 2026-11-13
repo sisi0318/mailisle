@@ -123,6 +123,8 @@ describe('HTTP authentication and local data', () => {
     expect(response.status).toBe(200); expect(body.imap).not.toHaveProperty('password'); expect(body.smtp).not.toHaveProperty('password');
     expect(JSON.stringify(body)).not.toContain('proxy-secret'); expect(body.proxyDisplay).toBe('http://127.0.0.1:7890');
     expect((await request(`/accounts/${id}`)).status).toBe(401);
+    expect((await request(`/accounts/${id}/verify`, 'POST', {})).status).toBe(401);
+    expect((await request(`/accounts/${id}/verify`, 'POST', {}, cookie)).status).toBe(400);
   });
 
   it('uploads a real multipart attachment, saves a local draft and removes both on discard', async () => {

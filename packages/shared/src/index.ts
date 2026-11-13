@@ -137,6 +137,7 @@ export const listSchema = z.object({
 
 export type AccountInput = z.infer<typeof accountSchema>;
 export type AccountUpdate = z.infer<typeof accountUpdateSchema>;
+export type AccountVerification = Record<'imap' | 'smtp', { status: 'success' | 'error' | 'disabled'; error?: string }>;
 export type AccountSettings = Omit<AccountInput, 'imap' | 'smtp' | 'proxy'> & {
   imap: Omit<AccountInput['imap'], 'password'>; smtp: Omit<AccountInput['smtp'], 'password'>; proxyDisplay?: string;
   globalProxyDisplay?: string;

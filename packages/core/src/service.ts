@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import type { MailStore } from '@mail/db';
-import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, type AccountSettings, type AccountUpdate, type ComposeMode, type Draft, type DraftInput, type FlagUpdate, type MessageBody, type SendInput, type SyncEvent } from '@mail/shared';
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, type AccountSettings, type AccountUpdate, type AccountVerification, type ComposeMode, type Draft, type DraftInput, type FlagUpdate, type MessageBody, type SendInput, type SyncEvent } from '@mail/shared';
 import type { MailAdapter } from './adapter';
 import { ImapAdapter } from './imap';
 import { Vault } from './crypto';
@@ -126,20 +126,24 @@ export class MailService {
       proxyMode: this.oauth.proxies.mode(config), proxyDisplay: proxyDisplay(config.proxy), globalProxyDisplay: this.oauth.proxies.settings().display };
   }
   async updateAccount(id: string, input: AccountUpdate) {
-    const old = this.accountConfig(id);
-    if (!input.receiveEnabled && !input.imap.host) input = { ...input, imap: { ...old.imap, password: undefined } };
-    if (!input.sendEnabled && !input.smtp.host) input = { ...input, smtp: { ...old.smtp, password: undefined } };
-    if (old.oauth && (input.imap.password || input.smtp.password)) throw new UserError('OAuth 邮箱不使用密码，请点击重新授权');
-    // A stored password only ever goes to the server it was entered for.
-    for (const protocol of ['imap', 'smtp'] as const) {
-      if (!old.oauth && !input[protocol].password && old[protocol].host.trim().toLowerCase() !== input[protocol].host.trim().toLowerCase())
-        throw new UserError(`更换${protocol === 'imap' ? '收信' : '发信'}服务器后需要重新填写密码，已保存的密码不会发往新的服务器`);
-    }
-    const config: AccountConfig = { ...input, oauth: old.oauth,
-      imap: { ...input.imap, password: input.imap.password ?? old.imap.password },
-      smtp: { ...input.smtp, password: input.smtp.password ?? old.smtp.password },
-      ...this.oauth.proxies.prepare(input, old) };
-    return this.replaceAccount(id, config, !!old.oauth);
+    const config = this.updatedAccountConfig(id, input);
+    await this.replaceAccount(id, config, !!config.oauth);
+  }
+  async verifyAccountSettings(id: string, input: AccountUpdate): Promise<AccountVerification> {
+    const config = this.updatedAccountConfig(id, input);
+    const adapter = this.makeAdapter(config, () => id);
+    const result: AccountVerification = { imap: { status: 'disabled' }, smtp: { status: 'disabled' } };
+    try {
+      await Promise.all((['imap', 'smtp'] as const).map(async protocol => {
+        if (!(protocol === 'imap' ? config.receiveEnabled : config.sendEnabled)) return;
+        try {
+          if (protocol === 'imap') { await adapter.connect(); await adapter.listFolders(); }
+          else await adapter.verifySmtp();
+          result[protocol] = { status: 'success' };
+        } catch (error) { result[protocol] = { status: 'error', error: publicError(error) }; }
+      }));
+      return result;
+    } finally { await adapter.close(); }
   }
   async saveOAuthAccount(config: AccountConfig, id?: string) {
     if (!id) return this.addAccount(config);
@@ -148,21 +152,15 @@ export class MailService {
   }
   private async replaceAccount(id: string, config: AccountConfig, keepOAuth = false) {
     const old = this.accountConfig(id);
-    let saved = false;
     let cached: string[] = [];
-    const adapter = this.makeAdapter(config, () => saved || keepOAuth ? id : undefined);
     this.beginAccountChange(id);
     try {
-      await this.verifyAccount(adapter, config);
       await this.pauseAccount(id);
       if (keepOAuth) config.oauth = this.accountConfig(id).oauth;
       const reset = old.imap.host !== config.imap.host || old.imap.port !== config.imap.port || old.imap.user !== config.imap.user;
       if (reset) cached = this.store.messageIds(id);
       this.store.updateAccount(id, config.name, config.email, this.vault.encrypt(config), reset, config);
-      saved = true;
-      this.adapters.set(id, adapter);
-    } catch (error) { await adapter.close(); throw error; }
-    finally { this.changingAccounts.delete(id); void this.sync(id); }
+    } finally { this.changingAccounts.delete(id); void this.sync(id); }
     await this.cleanupBodies(cached);
     this.emit({ type: 'change', accountId: id });
   }
@@ -420,6 +418,21 @@ export class MailService {
     const account = this.store.account(id);
     if (!account) throw new UserError('邮箱不存在', 404);
     return { ...this.vault.decrypt<AccountConfig>(account.encryptedConfig), receiveEnabled: account.receiveEnabled, sendEnabled: account.sendEnabled };
+  }
+  private updatedAccountConfig(id: string, input: AccountUpdate): AccountConfig {
+    const old = this.accountConfig(id);
+    if (!input.receiveEnabled && !input.imap.host) input = { ...input, imap: { ...old.imap, password: undefined } };
+    if (!input.sendEnabled && !input.smtp.host) input = { ...input, smtp: { ...old.smtp, password: undefined } };
+    if (old.oauth && (input.imap.password || input.smtp.password)) throw new UserError('OAuth 邮箱不使用密码，请在高级设置中重新授权');
+    // A stored password only ever goes to the server it was entered for.
+    for (const protocol of ['imap', 'smtp'] as const) {
+      if (!old.oauth && !input[protocol].password && old[protocol].host.trim().toLowerCase() !== input[protocol].host.trim().toLowerCase())
+        throw new UserError(`更换${protocol === 'imap' ? '收信' : '发信'}服务器后需要重新填写密码，已保存的密码不会发往新的服务器`);
+    }
+    return { ...input, oauth: old.oauth,
+      imap: { ...input.imap, password: input.imap.password ?? old.imap.password },
+      smtp: { ...input.smtp, password: input.smtp.password ?? old.smtp.password },
+      ...this.oauth.proxies.prepare(input, old) };
   }
   private async verifyAccount(adapter: MailAdapter, config: AccountConfig) {
     if (config.receiveEnabled) { await adapter.connect(); return adapter.listFolders(); }
