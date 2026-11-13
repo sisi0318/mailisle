@@ -4,7 +4,7 @@ import { ArrowDown, ArrowUp, Plus, Settings, Trash2 } from 'lucide-react';
 import type { Account } from '@mail/shared';
 import { api, json } from '../api';
 import { accountColor } from '../format';
-import { Button, Modal } from './ui';
+import { Button, ConfirmModal, Modal } from './ui';
 
 type Props = {
   accounts: Account[];
@@ -17,6 +17,7 @@ type Props = {
 export function AccountManager({ accounts, onClose, onAdd, onEdit, onRemoved }: Props) {
   const query = useQueryClient();
   const [notice, setNotice] = useState('');
+  const [confirmingRemove, setConfirmingRemove] = useState<Account | null>(null);
   const reorder = useMutation({
     mutationFn: (accountIds: string[]) => api<Account[]>('/accounts/order', json('PUT', { accountIds })),
     onSuccess: ordered => { query.setQueryData(['accounts'], ordered); setNotice('顺序已保存'); },
@@ -27,6 +28,7 @@ export function AccountManager({ accounts, onClose, onAdd, onEdit, onRemoved }: 
     onSuccess: (_result, account) => {
       query.setQueryData<Account[]>(['accounts'], current => current?.filter(item => item.id !== account.id));
       query.removeQueries({ queryKey: ['account-settings', account.id] });
+      setConfirmingRemove(null);
       onRemoved(account.id); setNotice('邮箱已移除'); void query.invalidateQueries();
     },
   });
@@ -36,12 +38,12 @@ export function AccountManager({ accounts, onClose, onAdd, onEdit, onRemoved }: 
     [ids[index], ids[index + offset]] = [ids[index + offset], ids[index]];
     setNotice(''); remove.reset(); reorder.mutate(ids);
   }
-  function removeAccount(account: Account) {
-    if (!window.confirm(`移除“${account.name}”及它在本机的邮件索引、缓存和草稿？服务器上的邮件不受影响。`)) return;
-    setNotice(''); reorder.reset(); remove.mutate(account);
+  function confirmRemoveAccount() {
+    if (!confirmingRemove) return;
+    setNotice(''); reorder.reset(); remove.mutate(confirmingRemove);
   }
-  return <Modal title="邮箱管理" description="调整顺序后自动保存。" onClose={() => { if (!busy) onClose(); }}>
-    {accounts.length ? <ol className="account-manager-list">{accounts.map((account, index) => <li className="account-manager-row" key={account.id}>
+  return <Modal title="邮箱管理" description="调整顺序后自动保存。" dismissible={!busy && !confirmingRemove} onClose={() => { if (!busy && !confirmingRemove) onClose(); }}>
+    {accounts.length ? <ol className="account-manager-list" role="list">{accounts.map((account, index) => <li className="account-manager-row" key={account.id}>
       <div className="account-manager-summary" title={`${account.name}\n${account.email}`}>
         <span className="account-mark" style={{ background: accountColor(index) }} />
         <span className="account-text"><span>{account.name}</span><small>{account.email}</small>
@@ -52,12 +54,16 @@ export function AccountManager({ accounts, onClose, onAdd, onEdit, onRemoved }: 
         <Button variant="ghost" disabled={busy || index === 0} aria-label={`上移 ${account.email}`} title="上移" onClick={() => move(index, -1)}><ArrowUp size={16} aria-hidden /></Button>
         <Button variant="ghost" disabled={busy || index === accounts.length - 1} aria-label={`下移 ${account.email}`} title="下移" onClick={() => move(index, 1)}><ArrowDown size={16} aria-hidden /></Button>
         <Button disabled={busy} aria-label={`设置 ${account.email}`} onClick={() => onEdit(account)}><Settings size={15} aria-hidden />设置</Button>
-        <Button variant="danger" disabled={busy} aria-label={`删除邮箱 ${account.email}`} onClick={() => removeAccount(account)}><Trash2 size={15} aria-hidden />删除</Button>
+        <Button variant="danger" disabled={busy} aria-label={`删除邮箱 ${account.email}`} onClick={() => setConfirmingRemove(account)}><Trash2 size={15} aria-hidden />删除</Button>
       </div>
     </li>)}</ol> : <p className="muted">还没有添加邮箱。</p>}
     {(reorder.error || remove.error) && <p className="error" role="alert">{reorder.error?.message || remove.error?.message}</p>}
     <div className="form-footer"><span className="hint" role="status">{busy ? '正在保存…' : notice}</span>
       <Button disabled={busy} onClick={onAdd}><Plus size={16} aria-hidden />添加邮箱</Button>
     </div>
+    {confirmingRemove && <ConfirmModal title={`移除“${confirmingRemove.name}”？`}
+      description="将删除它在本机的邮件索引、缓存和草稿；邮箱服务器上的邮件不受影响。"
+      confirmLabel={remove.isPending ? '正在移除…' : '移除'} cancelLabel="取消" variant="danger" pending={remove.isPending}
+      onClose={() => setConfirmingRemove(null)} onConfirm={confirmRemoveAccount} />}
   </Modal>;
 }

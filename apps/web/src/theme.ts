@@ -12,12 +12,25 @@ function stored(): Theme {
 }
 let current = stored();
 
-/** The stylesheet follows the system by itself; an explicit choice is an attribute on the root element. */
+/** The stylesheet follows the system by itself; an explicit choice is an attribute on the root element and the color-scheme meta. */
 function apply() {
   if (current === 'system') delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = current;
+  const meta = document.querySelector<HTMLMetaElement>('meta[name="color-scheme"]');
+  if (meta) meta.content = current === 'system' ? 'light dark' : current;
 }
 apply();
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', event => {
+    if (event.key !== key) return;
+    const next: Theme = event.newValue === 'light' || event.newValue === 'dark' ? event.newValue : 'system';
+    if (next === current) return;
+    current = next;
+    apply();
+    for (const listener of listeners) listener();
+  });
+}
 
 export function setTheme(theme: Theme) {
   current = theme;

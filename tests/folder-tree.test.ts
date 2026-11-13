@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import type { Folder } from '../packages/shared/src/index';
-import { folderTree } from '../apps/web/src/format';
+import { folderTree, splitFileName } from '../apps/web/src/format';
 
 function folder(path: string, delimiter: string | null = '/', accountId = 'one'): Folder {
   return { id: `${accountId}:${path}`, accountId, path, delimiter, name: delimiter ? path.split(delimiter).at(-1)! : path,
@@ -21,4 +21,14 @@ it('merges real parents with their descendants and uses each server delimiter wi
   expect(parent.children[0].children[0].label).toBe('Invoices');
   expect(tree.find(node => node.accountId === 'two')?.children[0].label).toBe('Receipts');
   expect(tree.find(node => node.path === 'a/b')?.children).toEqual([]);
+});
+
+it('keeps extensions un-truncated when splitting file names', () => {
+  expect(splitFileName('2026-annual-financial-report.final.pdf')).toEqual({
+    stem: '2026-annual-financial-report.final',
+    ext: '.pdf',
+  });
+  expect(splitFileName('README')).toEqual({ stem: 'README', ext: '' });
+  expect(splitFileName('.gitignore')).toEqual({ stem: '.gitignore', ext: '' });
+  expect(splitFileName('archive.tar.gz')).toEqual({ stem: 'archive.tar', ext: '.gz' });
 });

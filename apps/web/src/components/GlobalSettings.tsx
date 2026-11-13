@@ -59,7 +59,7 @@ export function GlobalSettings({ onClose, onUpdates }: { onClose: () => void; on
     <div hidden={page !== 'proxy'}><form className="settings-form" onSubmit={event => { event.preventDefault(); saveProxy.mutate(proxyInput.trim()); }}>
       <fieldset className="form-fields" disabled={busy}>
         <p className="hint">{proxy.isPending ? '正在读取…' : proxy.error ? proxy.error.message : proxy.data?.display ? `当前代理：${proxy.data.display}` : '未设置，默认直接连接。'}</p>
-        <label>全局代理地址<input value={proxyInput} onChange={event => setProxyInput(event.target.value)} placeholder="HTTP 或 SOCKS5 代理地址" autoComplete="off" /></label>
+        <label>全局代理地址<input value={proxyInput} onChange={event => setProxyInput(event.target.value)} placeholder="HTTP 或 SOCKS5 代理地址" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} /></label>
         <p className="hint">供选择“继承全局”的邮箱使用。更新检查是否使用代理，可在更新设置中选择。</p>
         <div className="form-footer"><Button type="button" disabled={!proxy.data?.configured} onClick={() => saveProxy.mutate(null)}>清除代理</Button><Button type="submit" variant="primary" disabled={!proxyInput.trim()}>{saveProxy.isPending ? '正在应用…' : '保存代理'}</Button></div>
       </fieldset>
@@ -68,7 +68,7 @@ export function GlobalSettings({ onClose, onUpdates }: { onClose: () => void; on
     {(['microsoft', 'google'] as const).map(provider => <div key={provider} hidden={page !== provider}>
       {!clients.data ? <p role="status">{clients.error?.message ?? '正在读取…'}</p> : <form className="settings-form" key={clients.data[provider].custom?.clientId ?? ''} onSubmit={event => submitClient(event, provider)}>
         <fieldset className="form-fields" disabled={busy}>
-          <label>Client ID<input name="clientId" required defaultValue={clients.data[provider].custom?.clientId} autoComplete="off" /></label>
+          <label>Client ID<input name="clientId" required defaultValue={clients.data[provider].custom?.clientId} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} /></label>
           {provider === 'google' && <label>Client secret<input name="clientSecret" type="password" required={!clients.data[provider].custom?.hasSecret} placeholder={clients.data[provider].custom?.hasSecret ? '留空保留；更换 ID 时须重填' : ''} autoComplete="new-password" /></label>}
           {provider === 'microsoft' && <p className="hint">公共桌面客户端，无需 Client secret。回调地址请填 http://localhost。</p>}
           <a href={`/api/oauth/docs/${provider}`} target="_blank" rel="noreferrer">查看注册教程 ↗</a>
@@ -79,7 +79,7 @@ export function GlobalSettings({ onClose, onUpdates }: { onClose: () => void; on
     </div>)}
     <div hidden={page !== 'updates'}>{!updateValues ? <p role="status">{updates.error?.message ?? '正在读取…'}</p> : <form className="settings-form" onSubmit={event => { event.preventDefault(); saveUpdates.mutate(updateValues); }}>
       <fieldset className="form-fields" disabled={busy}>
-        <label className="settings-switch"><span><strong>检查更新</strong><small>自动检查，不会自动安装</small></span><input type="checkbox" role="switch" checked={updateValues.enabled} onChange={event => setUpdateDraft({ ...updateValues, enabled: event.target.checked })} /></label>
+        <label className="settings-switch"><span><strong>检查更新</strong><small>自动检查，不会自动安装</small></span><input type="checkbox" switch="" role="switch" checked={updateValues.enabled} onChange={event => setUpdateDraft({ ...updateValues, enabled: event.target.checked })} /></label>
         <label className="checkbox-label"><input type="checkbox" checked={updateValues.useGlobalProxy} onChange={event => setUpdateDraft({ ...updateValues, useGlobalProxy: event.target.checked })} />使用全局代理</label>
         {updateValues.useGlobalProxy && <p className="hint">{proxy.data?.configured ? `当前代理：${proxy.data.display}` : '未设置全局代理，将直接连接。'}</p>}
         <label>检查频率<select disabled={!updateValues.enabled} value={updateValues.frequency} onChange={event => setUpdateDraft({ ...updateValues, frequency: event.target.value as UpdateSettings['frequency'] })}>

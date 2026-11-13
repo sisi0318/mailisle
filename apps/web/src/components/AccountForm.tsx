@@ -72,15 +72,26 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
       user: value(`${protocol}User`) || value('email'), password: String(form.get(`${protocol}Password`) || password) || (accountId ? undefined : '') });
     const account = { name: value('name') || preset?.name || value('email'), email: value('email'), receiveEnabled, sendEnabled,
       imap: server('imap'), smtp: server('smtp'), proxyMode, proxy: proxyMode === 'custom' ? value('proxy') || undefined : undefined, sentCopy: value('sentCopy') };
+    const focusInvalid = (issues: { path: PropertyKey[] }[]) => {
+      const [head, tail] = issues[0]?.path ?? [];
+      const fieldName = head === 'imap' || head === 'smtp'
+        ? `${String(head)}${String(tail ?? '').replace(/^[a-z]/, ch => ch.toUpperCase())}`
+        : head === 'client' ? `oauth${String(tail ?? '').replace(/^[a-z]/, ch => ch.toUpperCase())}`
+        : head === 'account' ? 'email' : String(head ?? '');
+      requestAnimationFrame(() => {
+        const control = fieldName ? element.elements.namedItem(fieldName) : null;
+        if (control instanceof HTMLElement) control.focus();
+      });
+    };
     if (useOAuth && oauthProvider && (action === 'authorize' || action === 'connect')) {
       const source = clientSource === 'automatic' ? clients.data?.[oauthProvider].custom ? 'global' : 'preset' : clientSource;
       const parsed = oauthStartSchema.safeParse({ account, accountId, provider: oauthProvider,
         client: { source, ...(source === 'custom' ? { clientId: value('oauthClientId'), clientSecret: String(form.get('oauthClientSecret') ?? '') || undefined } : {}) } });
-      if (!parsed.success) { setServersOpen(true); setError(describeIssues(parsed.error.issues, labels)); return; }
+      if (!parsed.success) { setServersOpen(true); setError(describeIssues(parsed.error.issues, labels)); focusInvalid(parsed.error.issues); return; }
       setError(''); start.mutate(parsed.data); return;
     }
     const parsed = (accountId ? accountUpdateSchema : accountSchema).safeParse(account);
-    if (!parsed.success) { setServersOpen(true); setError(describeIssues(parsed.error.issues, labels)); return; }
+    if (!parsed.success) { setServersOpen(true); setError(describeIssues(parsed.error.issues, labels)); focusInvalid(parsed.error.issues); return; }
     setError('');
     if (action === 'verify') {
       const controller = new AbortController();
@@ -95,12 +106,12 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
     </select></label>
     {proxyMode === 'global' && <p className="hint">{globalProxy.isPending ? '正在读取全局代理…' : globalProxy.error ? globalProxy.error.message
       : globalProxy.data?.display ? `当前全局代理：${globalProxy.data.display}` : '全局未设置代理，将直接连接。'}</p>}
-    <label style={proxyMode !== 'custom' ? { display: 'none' } : undefined}>独立代理地址<input name="proxy" placeholder={settings?.proxyDisplay ? `留空保留 ${settings.proxyDisplay}` : 'http://127.0.0.1:7890 或 socks5://127.0.0.1:1080'} /></label>
+    <label style={proxyMode !== 'custom' ? { display: 'none' } : undefined}>独立代理地址<input name="proxy" autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder={settings?.proxyDisplay ? `留空保留 ${settings.proxyDisplay}` : 'http://127.0.0.1:7890 或 socks5://127.0.0.1:1080'} /></label>
   </>;
-  return <Modal title={accountId ? '邮箱设置' : '连接邮箱'} onClose={() => { if (!busy && !authorizing) { cancelVerification(); onClose(); } }} wide>
+  return <Modal title={accountId ? '邮箱设置' : '连接邮箱'} dismissible={false} onClose={() => { if (!busy && !authorizing) { cancelVerification(); onClose(); } }} wide>
     {authorization && <OAuthAuthorization session={authorization} onSaved={saved} onBusy={setAuthorizing} onCancel={() => { setAuthorization(null); start.reset(); }} />}
     <form onSubmit={event => { event.preventDefault(); submit(event.currentTarget, accountId ? 'save' : 'connect'); }} onChange={cancelVerification} className="account-form" noValidate style={authorization ? { display: 'none' } : undefined}><fieldset className="form-fields" disabled={busy}>
-      <div className="form-grid"><label>邮箱地址<input name="email" type="email" required autoFocus value={email} onChange={event => setEmail(event.target.value)} placeholder="you@example.com" /></label><label>显示名称（选填）<input name="name" defaultValue={settings?.name} placeholder={preset?.name ?? '例如：工作邮箱'} /></label></div>
+      <div className="form-grid"><label>邮箱地址<input name="email" type="email" autoComplete="email" autoCapitalize="none" autoCorrect="off" spellCheck={false} required autoFocus value={email} onChange={event => setEmail(event.target.value)} placeholder="you@example.com" /></label><label>显示名称（选填）<input name="name" defaultValue={settings?.name} placeholder={preset?.name ?? '例如：工作邮箱'} /></label></div>
       <div className="account-channels" role="group" aria-label="邮箱用途">
         <label className="checkbox-label"><input type="checkbox" checked={receiveEnabled} onChange={event => setReceiveEnabled(event.target.checked)} />收信</label>
         <label className="checkbox-label"><input type="checkbox" checked={sendEnabled} onChange={event => setSendEnabled(event.target.checked)} />发信</label>
@@ -114,15 +125,15 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
       {!useOAuth && !blocked && <label>{providerHints?.passwordLabel ?? '密码或授权码'}{accountId && '（留空不改）'}<input name="password" type="password" autoComplete="new-password" required={!accountId} placeholder={accountId ? '同时更新收发信密码，发信可下方另填' : ''} /></label>}
       {/* Google and Microsoft are often only reachable through a proxy, so for them the field is not tucked away below. */}
       {oauthProvider && proxyFields}
-      <details className="advanced" open={serversOpen ?? !preset}>
-        <summary onClick={event => { event.preventDefault(); setServersOpen(!(serversOpen ?? !preset)); }}>高级设置{preset && <span>已按 {preset.name} 填好</span>}</summary>
+      <details className="advanced" open={serversOpen ?? !preset} onToggle={event => { const next = event.currentTarget.open; if (next !== (serversOpen ?? !preset)) setServersOpen(next); }}>
+        <summary>高级设置{preset && <span>已按 {preset.name} 填好</span>}</summary>
         <div className="form-grid" key={presetKey} style={!receiveEnabled || !sendEnabled ? { gridTemplateColumns: '1fr' } : undefined}>{(['imap', 'smtp'] as const).map(protocol => {
           const server = preset?.[protocol] ?? settings?.[protocol];
           const user = providerId === 'discovered' ? discovered?.[protocol].user : !preset ? settings?.[protocol].user : '';
           return <fieldset key={protocol} style={!(protocol === 'imap' ? receiveEnabled : sendEnabled) ? { display: 'none' } : undefined}><legend>{protocol === 'imap' ? '收信（IMAP）' : '发信（SMTP）'}</legend>
-            <label>服务器<input name={`${protocol}Host`} required defaultValue={server?.host ?? ''} placeholder={`${protocol}.example.com`} /></label>
+            <label>服务器<input name={`${protocol}Host`} autoCapitalize="none" autoCorrect="off" spellCheck={false} required defaultValue={server?.host ?? ''} placeholder={`${protocol}.example.com`} /></label>
             <div className="server-options"><label>端口<input name={`${protocol}Port`} type="number" min={1} max={65535} required defaultValue={server?.port ?? (protocol === 'imap' ? 993 : 465)} /></label><label>加密<select name={`${protocol}Security`} defaultValue={server?.security ?? 'tls'}><option value="tls">TLS</option><option value="starttls">STARTTLS</option><option value="plain">不加密（仅本机）</option></select></label></div>
-            <label>登录名（选填）<input name={`${protocol}User`} defaultValue={user} placeholder="默认用邮箱地址" /></label>
+            <label>登录名（选填）<input name={`${protocol}User`} autoCapitalize="none" autoCorrect="off" spellCheck={false} defaultValue={user} placeholder="默认用邮箱地址" /></label>
             {protocol === 'smtp' && !useOAuth && <label>独立发信密码（选填）<input name="smtpPassword" type="password" autoComplete="new-password" placeholder={accountId ? '留空保留或随上栏更新' : '默认同上'} /></label>}
           </fieldset>;
         })}</div>

@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Archive, Download, FolderInput, Forward, Image, ImageOff, Mail, MailOpen, Reply, ReplyAll, Star, Trash2 } from 'lucide-react';
 import type { Address, ComposeMode, Folder, FolderRole, Message, MessageBody } from '@mail/shared';
 import { api, json } from '../api';
 import { fileSize, folderList, fullDate, listDate, senderName } from '../format';
 import { mailDocument } from '../mail-html';
-import { Button } from './ui';
+import { Button, FileName, Toolbar } from './ui';
 
 type Props = {
   message: Message;
@@ -14,6 +14,7 @@ type Props = {
   accountName?: string;
   /** The reader covers the list instead of sitting next to it. */
   covering: boolean;
+  backLabel?: string;
   onReply: (mode: ComposeMode, includeAttachments?: boolean) => void;
   composing: boolean;
   receiving: boolean;
@@ -25,7 +26,7 @@ type Props = {
 
 const people = (list: Address[]) => list.map(item => item.name ? `${item.name} <${item.address}>` : item.address).join('、');
 
-export function Reader({ message, folders, accountName, covering, onReply, composing, receiving, onBack, onSelect, onFlag, onMoved }: Props) {
+export function Reader({ message, folders, accountName, covering, backLabel, onReply, composing, receiving, onBack, onSelect, onFlag, onMoved }: Props) {
   const query = useQueryClient();
   const back = useRef<HTMLButtonElement>(null);
   const [expanded, setExpanded] = useState(false);
@@ -50,19 +51,19 @@ export function Reader({ message, folders, accountName, covering, onReply, compo
   const attachments = (body.data?.attachments ?? []).filter(attachment => !embedded.has(attachment.id));
 
   return <section className="reader" aria-label="邮件阅读">
-    <div className="reader-toolbar">
-      <Button ref={back} variant="ghost" className="reader-back" onClick={onBack} aria-label="返回列表" title="返回列表（Esc）"><ArrowLeft size={18} aria-hidden /></Button>
+    <Toolbar className="reader-toolbar" aria-label="邮件操作">
+      <Button ref={back} variant="ghost" className="reader-back" onClick={onBack} aria-label={backLabel ? `返回${backLabel}` : '返回列表'} title="返回列表（Esc）"><ArrowLeft size={18} aria-hidden /></Button>
       <Button variant="ghost" disabled={composing} onClick={() => onReply('reply')}><Reply size={17} aria-hidden />回复</Button>
       <Button variant="ghost" disabled={composing} aria-label="全部回复" title="全部回复" onClick={() => onReply('reply-all')}><ReplyAll size={17} aria-hidden /></Button>
       <Button variant="ghost" disabled={composing} aria-label="转发，带上附件" title="转发并携带附件（含内嵌图片文件）" onClick={() => onReply('forward')}><Forward size={17} aria-hidden /></Button>
       <Button variant="ghost" disabled={composing} className="forward-text" onClick={() => onReply('forward', false)}>仅转发正文</Button>
-      <span className="toolbar-separator" />
+      <span className="toolbar-separator" role="separator" aria-orientation="vertical" />
       <Button variant="ghost" disabled={!receiving} aria-label={message.seen ? '标为未读' : '标为已读'} title={!receiving ? '此邮箱已关闭收信' : message.seen ? '标为未读' : '标为已读'} onClick={() => onFlag({ seen: !message.seen })}>{message.seen ? <Mail size={17} aria-hidden /> : <MailOpen size={17} aria-hidden />}</Button>
-      <Button variant="ghost" disabled={!receiving} aria-label={message.starred ? '取消星标' : '加星标'} title={!receiving ? '此邮箱已关闭收信' : message.starred ? '取消星标' : '加星标'} aria-pressed={message.starred} className={message.starred ? 'starred' : ''} onClick={() => onFlag({ starred: !message.starred })}><Star size={17} aria-hidden fill={message.starred ? 'currentColor' : 'none'} /></Button>
+      <Button variant="ghost" disabled={!receiving} aria-label="星标" title={!receiving ? '此邮箱已关闭收信' : message.starred ? '取消星标' : '加星标'} aria-pressed={message.starred} className={message.starred ? 'starred' : ''} onClick={() => onFlag({ starred: !message.starred })}><Star size={17} aria-hidden fill={message.starred ? 'currentColor' : 'none'} /></Button>
       <Button variant="ghost" aria-label="归档" title={archive ? '归档' : '这个邮箱没有归档文件夹'} disabled={move.isPending || !archive} onClick={() => move.mutate(archive!.id)}><Archive size={17} aria-hidden /></Button>
       <Button variant="ghost" aria-label="移到已删除" title={trash ? '移到已删除' : '这个邮箱没有已删除文件夹'} disabled={move.isPending || !trash} onClick={() => move.mutate(trash!.id)}><Trash2 size={17} aria-hidden /></Button>
       <MoveMenu targets={targets} pending={move.isPending} onMove={folderId => move.mutate(folderId)} />
-    </div>
+    </Toolbar>
 
     <header className="reader-head">
       <h1>{message.subject || '（无主题）'}</h1>
@@ -87,7 +88,7 @@ export function Reader({ message, folders, accountName, covering, onReply, compo
       </details>}
       {attachments.length > 0 && <div className="attachments" aria-label={`附件 ${attachments.length} 个`}>
         {attachments.map(attachment => <a key={attachment.id} href={`/api/messages/${message.id}/attachments/${attachment.id}`} download={attachment.filename} title={`下载 ${attachment.filename}`}>
-          <Download size={15} aria-hidden /><span>{attachment.filename}</span><small>{fileSize(attachment.size)}</small>
+          <Download size={15} aria-hidden /><FileName name={attachment.filename} /><small>{fileSize(attachment.size)}</small>
         </a>)}
       </div>}
       {rendered && (rendered.blockedImages > 0 || showImages) && <p className="reader-note">
@@ -108,27 +109,68 @@ export function Reader({ message, folders, accountName, covering, onReply, compo
 
 /** A menu instead of a select: arrow keys in a closed select change its value, which moved mail by accident. */
 function MoveMenu({ targets, pending, onMove }: { targets: { folder: Folder; label: string }[]; pending: boolean; onMove: (folderId: string) => void }) {
+  const menuId = useId();
   const [open, setOpen] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
+  const [fallbackStyle, setFallbackStyle] = useState<CSSProperties>();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
-    if (!open) return;
-    const close = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
-    document.addEventListener('pointerdown', close);
-    root.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
-    return () => document.removeEventListener('pointerdown', close);
-  }, [open]);
+    const el = menuRef.current;
+    if (!el) return;
+    const onToggle = (event: Event) => {
+      const next = (event as ToggleEvent).newState === 'open';
+      setOpen(next);
+      if (!next) {
+        setFallbackStyle(undefined);
+        return;
+      }
+      if (!CSS.supports('position-area: block-end') && triggerRef.current) {
+        const anchor = triggerRef.current.getBoundingClientRect();
+        const rect = el.getBoundingClientRect();
+        const pad = 8;
+        const left = Math.max(pad, Math.min(anchor.right - rect.width, window.innerWidth - rect.width - pad));
+        const spaceBelow = window.innerHeight - anchor.bottom - pad;
+        const top = spaceBelow >= rect.height || spaceBelow >= anchor.top - pad
+          ? Math.min(anchor.bottom + 4, window.innerHeight - rect.height - pad)
+          : Math.max(pad, anchor.top - rect.height - 4);
+        setFallbackStyle({ left, top });
+      }
+      el.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    };
+    el.addEventListener('toggle', onToggle);
+    return () => el.removeEventListener('toggle', onToggle);
+  }, []);
+
   function keys(event: KeyboardEvent<HTMLDivElement>) {
-    if (!open) return;
-    const items = [...(root.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
+    if (event.key === 'Escape') {
+      event.stopPropagation();
+      menuRef.current?.hidePopover?.();
+      triggerRef.current?.focus();
+      return;
+    }
+    if ('focusGroup' in HTMLElement.prototype) return;
+    const items = [...(menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
+    if (!items.length) return;
     const index = items.indexOf(document.activeElement as HTMLElement);
-    if (event.key === 'Escape') { event.stopPropagation(); setOpen(false); root.current?.querySelector<HTMLElement>('button')?.focus(); }
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); items[(index + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus(); }
+    if (event.key === 'ArrowDown') { event.preventDefault(); items[(index + 1) % items.length]?.focus(); }
+    else if (event.key === 'ArrowUp') { event.preventDefault(); items[(index - 1 + items.length) % items.length]?.focus(); }
+    else if (event.key === 'Home') { event.preventDefault(); items[0]?.focus(); }
+    else if (event.key === 'End') { event.preventDefault(); items[items.length - 1]?.focus(); }
   }
-  return <div className="move-menu" ref={root} onKeyDown={keys}>
-    <Button variant="ghost" aria-haspopup="menu" aria-expanded={open} disabled={pending || !targets.length} onClick={() => setOpen(!open)}><FolderInput size={17} aria-hidden />{pending ? '正在移动…' : '移动到'}</Button>
-    {open && <div className="move-menu-list" role="menu" aria-label="移动到文件夹">
-      {targets.map(({ folder, label }) => <button key={folder.id} type="button" role="menuitem" onClick={() => { setOpen(false); onMove(folder.id); }}>{label}</button>)}
-    </div>}
+
+  return <div className="move-menu">
+    <Button ref={triggerRef} variant="ghost" className="move-trigger" popoverTarget={menuId} popoverTargetAction="toggle"
+      aria-haspopup="menu" aria-expanded={open} disabled={pending || !targets.length}>
+      <FolderInput size={17} aria-hidden />{pending ? '正在移动…' : '移动到'}
+    </Button>
+    <div id={menuId} ref={menuRef} popover="auto" role="menu" focusgroup="menu nomemory" aria-label="移动到文件夹"
+      className="move-menu-list" style={fallbackStyle} onKeyDown={keys}>
+      <div className="move-menu-items">
+        {targets.map(({ folder, label }) => <button key={folder.id} type="button" role="menuitem"
+          onClick={() => { menuRef.current?.hidePopover?.(); onMove(folder.id); }}>{label}</button>)}
+      </div>
+    </div>
   </div>;
 }
 

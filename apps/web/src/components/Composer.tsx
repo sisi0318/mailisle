@@ -7,7 +7,7 @@ import { Bold, Italic, List, Paperclip, Save, Send, Trash2, X } from 'lucide-rea
 import { draftSchema, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, sendSchema, type Account, type Draft, type DraftInput, type Upload } from '@mail/shared';
 import { api, ApiError, json } from '../api';
 import { describeIssues, fileSize } from '../format';
-import { Button, Modal } from './ui';
+import { Button, ConfirmModal, FileName, Modal, Toolbar } from './ui';
 
 const labels = { accountId: '发件人', to: '收件人', cc: '抄送', bcc: '密送', subject: '主题', text: '正文', html: '正文', attachmentIds: '附件' };
 
@@ -53,7 +53,8 @@ export function Composer({ accounts, draft, accountId, fresh = false, onClose, o
   const [status, setStatus] = useState(draft && !fresh ? '已载入本地草稿' : '');
   const [error, setError] = useState('');
   const [showCopies, setShowCopies] = useState(!!(draft?.cc || draft?.bcc));
-  const [asking, setAsking] = useState<'close' | 'delete' | null>(null);
+  const [asking, setAsking] = useState<'close' | 'delete' | 'no-subject' | null>(null);
+  const pendingSendRef = useRef<Parameters<typeof send.mutate>[0] | null>(null);
   const changed = () => { revision.current++; setDirty(true); };
   const refreshLists = () => { void query.invalidateQueries({ queryKey: ['drafts'] }); void query.invalidateQueries({ queryKey: ['counts'] }); };
 
@@ -155,7 +156,7 @@ export function Composer({ accounts, draft, accountId, fresh = false, onClose, o
     if (!canSend) { setError('此邮箱已关闭发信，请更换发件人或开启发信。'); return; }
     const content = input();
     if (!content) return;
-    if (!content.subject.trim() && !window.confirm('这封邮件没有主题，仍然发送吗？')) return;
+    if (!content.subject.trim()) { pendingSendRef.current = content; setAsking('no-subject'); return; }
     send.mutate(content);
   }
   function requestClose() {
@@ -171,7 +172,7 @@ export function Composer({ accounts, draft, accountId, fresh = false, onClose, o
     if (draftId.current) onClose(); else discard.mutate();
   }
   function shortcut(event: KeyboardEvent<HTMLFormElement>) {
-    if (!(event.ctrlKey || event.metaKey)) return;
+    if (!(event.ctrlKey || event.metaKey) || event.nativeEvent.isComposing) return;
     if (event.key === 'Enter') { event.preventDefault(); if (!busy) form.current?.requestSubmit(); }
     if (event.key.toLowerCase() === 's') { event.preventDefault(); if (!busy) saveCurrent(); }
   }
@@ -182,22 +183,22 @@ export function Composer({ accounts, draft, accountId, fresh = false, onClose, o
   const format = (label: string, pressed: boolean | undefined, run: () => void, icon: ReactNode) =>
     <Button type="button" variant="ghost" aria-label={label} title={label} aria-pressed={!!pressed} className={pressed ? 'active' : ''} onClick={run}>{icon}</Button>;
 
-  return <Modal title={draft && !fresh ? '编辑草稿' : '写邮件'} wide className="composer-modal" onClose={requestClose}>
+  return <Modal title={draft && !fresh ? '编辑草稿' : '写邮件'} wide className="composer-modal" dismissible={!asking && !busy} onClose={requestClose}>
     <form ref={form} className="composer" onSubmit={submit} onInput={changed} onKeyDown={shortcut}>
       <fieldset className="form-fields" disabled={busy}>
         <label>发件人<select name="accountId" value={senderId} onChange={event => setSenderId(event.target.value)}>{accounts.map(account => <option key={account.id} value={account.id}>{account.name} &lt;{account.email}&gt;{!account.sendEnabled ? '（发信已关闭）' : ''}</option>)}</select></label>
         {!canSend && <p className="hint">此邮箱已关闭发信，可保存草稿或更换发件人。</p>}
-        <div className="compose-address"><div className="label-row"><label htmlFor="composer-to">收件人</label>{!showCopies && <button type="button" className="link-button" onClick={() => setShowCopies(true)}>添加抄送、密送</button>}</div><input id="composer-to" name="to" autoFocus={!draft} defaultValue={draft?.to ?? ''} placeholder="多个地址用逗号分隔" /></div>
-        {showCopies && <div className="form-grid"><label>抄送<input name="cc" defaultValue={draft?.cc ?? ''} /></label><label>密送<input name="bcc" defaultValue={draft?.bcc ?? ''} /></label></div>}
+        <div className="compose-address"><div className="label-row"><label htmlFor="composer-to">收件人</label>{!showCopies && <button type="button" className="link-button" onClick={() => setShowCopies(true)}>添加抄送、密送</button>}</div><input id="composer-to" name="to" autoFocus={!draft} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} defaultValue={draft?.to ?? ''} placeholder="多个地址用逗号分隔" /></div>
+        {showCopies && <div className="form-grid"><label>抄送<input name="cc" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} defaultValue={draft?.cc ?? ''} /></label><label>密送<input name="bcc" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} defaultValue={draft?.bcc ?? ''} /></label></div>}
         <label>主题<input name="subject" defaultValue={draft?.subject ?? ''} /></label>
-        <div className="editor-wrap"><div className="editor-toolbar">
+        <div className="editor-wrap"><Toolbar className="editor-toolbar" aria-label="格式工具栏">
           {format('加粗', active?.bold, () => editor?.chain().focus().toggleBold().run(), <Bold size={16} aria-hidden />)}
           {format('斜体', active?.italic, () => editor?.chain().focus().toggleItalic().run(), <Italic size={16} aria-hidden />)}
           {format('项目列表', active?.list, () => editor?.chain().focus().toggleBulletList().run(), <List size={16} aria-hidden />)}
           <Button type="button" variant="ghost" onClick={() => fileInput.current?.click()}><Paperclip size={16} aria-hidden />添加附件</Button>
           <input ref={fileInput} type="file" multiple hidden onChange={event => { const files = [...(event.target.files ?? [])]; event.target.value = ''; if (files.length) upload.mutate(files); }} />
-        </div><EditorContent editor={editor} /></div>
-        {attachments.length > 0 && <ul className="compose-attachments">{attachments.map(file => <li key={file.id}><Paperclip size={14} aria-hidden /><a href={`/api/uploads/${file.id}`} download={file.filename}>{file.filename}</a><small>{fileSize(file.size)}</small><button type="button" aria-label={`移除附件 ${file.filename}`} onClick={() => removeAttachment(file)}><X size={15} aria-hidden /></button></li>)}</ul>}
+        </Toolbar><EditorContent editor={editor} /></div>
+        {attachments.length > 0 && <ul className="compose-attachments" role="list">{attachments.map(file => <li key={file.id}><Paperclip size={14} aria-hidden /><a href={`/api/uploads/${file.id}`} download={file.filename} title={file.filename}><FileName name={file.filename} /></a><small>{fileSize(file.size)}</small><button type="button" aria-label={`移除附件 ${file.filename}`} onClick={() => removeAttachment(file)}><X size={15} aria-hidden /></button></li>)}</ul>}
       </fieldset>
       <div className="composer-bottom">
         {(error || save.error || send.error || upload.error || discard.error) && <p className="error" role="alert">{error || send.error?.message || save.error?.message || upload.error?.message || discard.error?.message}</p>}
@@ -205,11 +206,15 @@ export function Composer({ accounts, draft, accountId, fresh = false, onClose, o
         <div className="form-footer"><Button type="button" variant="ghost" disabled={busy} onClick={() => setAsking('delete')}><Trash2 size={16} aria-hidden />{saved ? '删除草稿' : '丢弃'}</Button><div className="button-row"><Button type="button" disabled={busy} onClick={() => saveCurrent()}><Save size={16} aria-hidden />{save.isPending ? '保存中…' : '保存草稿'}</Button><Button type="submit" variant="primary" disabled={busy || !canSend}><Send size={16} aria-hidden />{send.isPending ? '正在发送…' : '发送'}</Button></div></div>
       </div>
     </form>
-    {asking === 'close' && <Modal title="保存这封邮件吗？" description={saved ? '上次保存之后还有修改。' : '这封邮件还没有保存。'} onClose={() => setAsking(null)}>
+    {asking === 'close' && <Modal title="保存这封邮件吗？" description={saved ? '上次保存之后还有修改。' : '这封邮件还没有保存。'} dismissible={!busy} onClose={() => setAsking(null)}>
       <div className="button-row confirm-actions"><Button onClick={() => setAsking(null)}>继续编辑</Button><Button onClick={closeWithoutSaving}>{saved ? '不保存最近的修改' : '不保存'}</Button><Button variant="primary" autoFocus onClick={() => saveCurrent(true)}>保存草稿并关闭</Button></div>
     </Modal>}
-    {asking === 'delete' && <Modal title="删除这封邮件？" description="邮件内容、已保存的草稿和添加的附件都会删除，无法恢复。" onClose={() => setAsking(null)}>
-      <div className="button-row confirm-actions"><Button autoFocus onClick={() => setAsking(null)}>取消</Button><Button variant="danger" onClick={() => { setAsking(null); discard.mutate(); }}>删除</Button></div>
-    </Modal>}
+    {asking === 'no-subject' && <ConfirmModal title="这封邮件没有主题，仍然发送吗？" description="收件人看到时主题将显示为空。"
+      confirmLabel="仍然发送" cancelLabel="回去填写主题" variant="primary"
+      onClose={() => { pendingSendRef.current = null; setAsking(null); }}
+      onConfirm={() => { const data = pendingSendRef.current; pendingSendRef.current = null; setAsking(null); if (data) send.mutate(data); }} />}
+    {asking === 'delete' && <ConfirmModal title="删除这封邮件？" description="邮件内容、已保存的草稿和添加的附件都会删除，无法恢复。"
+      confirmLabel="删除" cancelLabel="取消" variant="danger"
+      onClose={() => setAsking(null)} onConfirm={() => { setAsking(null); discard.mutate(); }} />}
   </Modal>;
 }

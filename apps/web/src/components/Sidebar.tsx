@@ -63,7 +63,15 @@ export function Sidebar({ accounts, folders, filter, expandedAccountId, onToggle
   function openActions(event: MouseEvent<HTMLButtonElement>, account: Account, folder?: Folder) {
     event.preventDefault();
     const rect = event.currentTarget.getBoundingClientRect();
-    onActions({ account, folder, x: event.type === 'contextmenu' && event.clientX ? event.clientX : rect.right, y: event.type === 'contextmenu' && event.clientY ? event.clientY : rect.bottom });
+    const context = event.type === 'contextmenu' && event.clientX;
+    onActions({
+      account,
+      folder,
+      x: context ? event.clientX : rect.right,
+      y: context ? event.clientY : rect.bottom,
+      anchorTop: context ? event.clientY : rect.top,
+      anchorLeft: context ? event.clientX : rect.left,
+    });
   }
   function toggleFolder(key: string) {
     setExpandedFolders(current => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
@@ -82,7 +90,7 @@ export function Sidebar({ accounts, folders, filter, expandedAccountId, onToggle
         </button>
         {folder && <button className="mail-more" aria-label={`文件夹操作 ${folder.path}`} title="文件夹操作" onClick={event => openActions(event, account, folder)}><MoreHorizontal size={14} aria-hidden /></button>}
       </div>
-      {!!children.length && open && <ul className="folder-children">{children.map(child => renderFolder(child, account))}</ul>}
+      {!!children.length && open && <ul className="folder-children" role="list">{children.map(child => renderFolder(child, account))}</ul>}
     </li>;
   }
   return <aside className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`} id={mobileOpen ? 'mobile-mail-sidebar' : 'mail-sidebar'} aria-label="邮箱导航">
@@ -119,7 +127,7 @@ export function Sidebar({ accounts, folders, filter, expandedAccountId, onToggle
           </div>
           {account.error && <p className="account-error" role="status">{account.error}</p>}
           {open && <div className="folder-list" id={folderListId}>
-            <ul className="folder-tree">{tree.filter(node => node.accountId === account.id).map(node => renderFolder(node, account))}</ul>
+            <ul className="folder-tree" role="list">{tree.filter(node => node.accountId === account.id).map(node => renderFolder(node, account))}</ul>
             <button className={selected && filter.view === 'drafts' ? 'active' : ''} onClick={() => onNavigate({ view: 'drafts', accountId: account.id })}><FileText size={14} /><span>本地草稿</span></button>
           </div>}
         </div>;

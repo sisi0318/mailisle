@@ -95,3 +95,10 @@ export function describeIssues(issues: Issue[], labels: Record<string, string>):
   });
   return [...new Set(lines)].join('；');
 }
+
+/** Splits a filename so middle truncation keeps the extension visible. */
+export function splitFileName(name: string): { stem: string; ext: string } {
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0 || dot >= name.length - 1 || name.length - dot > 12) return { stem: name, ext: '' };
+  return { stem: name.slice(0, dot), ext: name.slice(dot) };
+}

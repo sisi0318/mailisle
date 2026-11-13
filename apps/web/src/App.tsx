@@ -4,7 +4,7 @@ import { FileText, Inbox, Mail, Menu, Plus, RefreshCw, Search, Send, TriangleAle
 import type { Account, ComposeMode, Draft, DraftSummary, Folder, Message, MessagePage, SyncEvent, UnreadCounts, UpdateState } from '@mail/shared';
 import { api, json } from './api';
 import { accountColor, folderList } from './format';
-import { Button, useMedia } from './components/ui';
+import { Button, ConfirmModal, useMedia } from './components/ui';
 import { Login, SessionLock } from './components/Login';
 import { MessageList } from './components/MessageList';
 import { Reader, ReaderEmpty } from './components/Reader';
@@ -86,7 +86,12 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
   const [mailActions, setMailActions] = useState<MailActionTarget | null>(null);
   const [creatingFolder, setCreatingFolder] = useState<MailActionTarget | null>(null);
   const [deletingFolder, setDeletingFolder] = useState<Folder | null>(null);
+  const [deletingDraftId, setDeletingDraftId] = useState<string | null>(null);
+  const [deletingDraftBusy, setDeletingDraftBusy] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [noticePaused, setNoticePaused] = useState(false);
+  const noticeRef = useRef<HTMLDivElement>(null);
+  const readerHistoryRef = useRef(false);
   const [syncing, setSyncing] = useState<Set<string>>(new Set());
   const [connected, setConnected] = useState(false);
   // A flag change only returns once the mail server has taken it, which can be seconds. It is shown at
@@ -134,11 +139,22 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     return () => clearTimeout(timer);
   }, [search, searchTerm]);
 
+  const modalOpen = locked || mobileNav || !!accountManager || !!accountForm || globalSettings || versionDialog || !!deletingFolder || !!creatingFolder || !!composer || !!deletingDraftId;
+  useEffect(() => { setNoticePaused(false); }, [notice]);
   useEffect(() => {
-    if (notice?.kind !== 'success') return;
+    const el = noticeRef.current;
+    if (!el) return;
+    const show = !!notice && !modalOpen;
+    try {
+      if (show) { if (!el.matches(':popover-open')) el.showPopover(); }
+      else if (el.matches(':popover-open')) el.hidePopover();
+    } catch { /* Safe fallback when Popover API is unavailable in tests. */ }
+  }, [notice, modalOpen]);
+  useEffect(() => {
+    if (notice?.kind !== 'success' || noticePaused || modalOpen) return;
     const timer = setTimeout(() => setNotice(null), 6000);
     return () => clearTimeout(timer);
-  }, [notice]);
+  }, [notice, noticePaused, modalOpen]);
 
   useEffect(() => {
     const unread = counts.data?.inbox ?? 0;
@@ -217,12 +233,19 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     });
   }, [query, fail]);
 
+  function clearReaderState() {
+    setSelected(null);
+    if (readerHistoryRef.current) {
+      readerHistoryRef.current = false;
+      history.back();
+    }
+  }
   function navigate(next: Filter) {
-    setFilter(next); setSelected(null); setMobileNav(false); setExpandedAccountId(next.accountId);
+    setFilter(next); clearReaderState(); setMobileNav(false); setExpandedAccountId(next.accountId);
   }
   function toggleAccount(id: string) {
     if (expandedAccountId === id) { setExpandedAccountId(undefined); return; }
-    setExpandedAccountId(id); setFilter({ view: 'inbox', accountId: id }); setSelected(null);
+    setExpandedAccountId(id); setFilter({ view: 'inbox', accountId: id }); clearReaderState();
   }
   const select = useCallback((message: Message) => {
     setSelected(message);
@@ -231,9 +254,25 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
   const closeReader = useCallback(() => {
     const id = selected?.id;
     setSelected(null);
+    if (readerHistoryRef.current) {
+      readerHistoryRef.current = false;
+      history.back();
+    }
     // Back in the list, the keyboard continues from the message that was open.
-    if (id) requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-message-id="${id}"]`)?.focus());
+    if (id) requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-message-id="${id}"]`)?.focus({ preventScroll: true }));
   }, [selected?.id]);
+  useEffect(() => {
+    const onPopState = () => {
+      if (!readerHistoryRef.current) return;
+      readerHistoryRef.current = false;
+      setSelected(current => {
+        if (current) requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-message-id="${current.id}"]`)?.focus({ preventScroll: true }));
+        return null;
+      });
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
   function syncAll() {
     for (const account of accountList) if (account.receiveEnabled) void api(`/accounts/${account.id}/sync`, { method: 'POST' }).catch(fail);
   }
@@ -241,10 +280,12 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     try { openComposer({ draft: await api<Draft>(`/drafts/${id}`) }, '先处理正在写的邮件，再打开这封草稿。'); }
     catch (error) { fail(error); void query.invalidateQueries({ queryKey: ['drafts'] }); }
   }
-  async function deleteDraft(id: string) {
-    if (!window.confirm('删除这封本地草稿和不再使用的附件？')) return;
-    try { await api(`/drafts/${id}`, { method: 'DELETE' }); }
+  async function confirmDeleteDraft() {
+    if (!deletingDraftId) return;
+    setDeletingDraftBusy(true);
+    try { await api(`/drafts/${deletingDraftId}`, { method: 'DELETE' }); setDeletingDraftId(null); }
     catch (error) { fail(error); }
+    finally { setDeletingDraftBusy(false); }
     await query.invalidateQueries({ queryKey: ['drafts'] }); await query.invalidateQueries({ queryKey: ['counts'] });
   }
   useEffect(() => {
@@ -262,7 +303,7 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
   useEffect(() => {
     const keys = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
-      if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || document.querySelector('[role="dialog"]')) return;
+      if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || document.querySelector('[role="dialog"], [role="alertdialog"], dialog[open], [popover]:popover-open')) return;
       if (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
       const open = !isDrafts && selectedMessage;
       const index = open ? rows.findIndex(message => message.id === open.id) : -1;
@@ -311,6 +352,13 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     onActions: setMailActions,
     onLogout };
   const reading = !isDrafts && !!selectedMessage;
+  useEffect(() => {
+    if (!covering || !reading) return;
+    if (!readerHistoryRef.current) {
+      history.pushState({ ...(history.state && typeof history.state === 'object' ? history.state : {}), mailReader: true }, '');
+      readerHistoryRef.current = true;
+    }
+  }, [covering, reading]);
 
   return <div className="mail-app" inert={locked}>
     <Sidebar {...sidebarProps} mobileOpen={false} />
@@ -323,33 +371,41 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
         <Button className="mobile-menu" variant="ghost" aria-label="打开邮箱导航" aria-expanded={mobileNav} aria-controls={mobileNav ? 'mobile-mail-sidebar' : undefined} onClick={() => setMobileNav(true)}><Menu size={20} aria-hidden /></Button>
         <div className="header-title"><h1 title={title}>{title}</h1>{scope && <span>{scope}</span>}</div>
         <div className="header-actions">
-          {!isDrafts && <div className="search-box">
+          {!isDrafts && <search className="search-box">
             <Search size={16} aria-hidden />
-            <input ref={searchBox} aria-label="搜索邮件" placeholder={account ? `在“${account.name}”中搜索` : '搜索全部邮箱'} value={search} onChange={event => setSearch(event.target.value)} />
-            {search && <button aria-label="清空搜索" onClick={() => setSearch('')}><X size={15} aria-hidden /></button>}
-          </div>}
+            <input ref={searchBox} type="search" enterKeyHint="search" aria-label="搜索邮件" placeholder={account ? `在“${account.name}”中搜索` : '搜索全部邮箱'} value={search} onChange={event => setSearch(event.target.value)} />
+            {search && <button type="button" aria-label="清空搜索" onClick={() => setSearch('')}><X size={15} aria-hidden /></button>}
+          </search>}
           {failing.length > 0 && <Button className="sync-alert" variant="ghost" aria-label={`${failing.length} 个邮箱同步失败，打开邮箱导航查看`} title={failing.map(item => `${item.name}：${item.error}`).join('\n')} onClick={() => setMobileNav(true)}><TriangleAlert size={17} aria-hidden /></Button>}
           <Button variant="ghost" aria-label="同步全部邮箱" title="同步全部邮箱" disabled={!canReceive || activeSync.size > 0} onClick={syncAll}><RefreshCw size={17} aria-hidden className={activeSync.size ? 'spin' : ''} /></Button>
         </div>
       </header>
-      {notice && <div className={`notice notice-${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}><span>{notice.text}</span><button aria-label="关闭提示" onClick={() => setNotice(null)}><X size={16} aria-hidden /></button></div>}
+      <div ref={noticeRef} popover="manual" className={notice ? `notice notice-${notice.kind}` : 'notice'}
+        role={notice?.kind === 'error' ? 'alert' : 'status'}
+        onMouseEnter={() => setNoticePaused(true)} onMouseLeave={() => setNoticePaused(false)}
+        onFocus={() => setNoticePaused(true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setNoticePaused(false); }}>
+        {notice && <><span>{notice.text}</span><button type="button" aria-label="关闭提示" onClick={() => setNotice(null)}><X size={16} aria-hidden /></button></>}
+      </div>
       {(accounts.error || folders.error) && <p className="error" role="alert">{accounts.error?.message || folders.error?.message}</p>}
       <div className="mail-panes">
         {/* While the reader covers the list on a narrow screen, the list is out of reach for keyboard and screen reader too. */}
         <section className="message-pane" inert={covering && reading}>
           {isDrafts ? drafts.isPending ? <p className="loading">正在读取草稿…</p> : drafts.error ? <p className="error">{drafts.error.message}</p>
-            : <DraftList drafts={drafts.data ?? []} accounts={accountList} onOpen={id => { void openDraft(id); }} onDelete={id => { void deleteDraft(id); }} />
+            : <DraftList drafts={drafts.data ?? []} accounts={accountList} onOpen={id => { void openDraft(id); }} onDelete={id => setDeletingDraftId(id)} />
             : <MessageList key={JSON.stringify([filter, searchTerm])} messages={messages} rows={rows} selectedId={selected?.id} onSelect={select} accountMark={accountMark} empty={empty} />}
         </section>
         {isDrafts ? <section className="reader-empty"><FileText size={40} strokeWidth={1.1} aria-hidden /><p>选择一封草稿继续编辑</p><small>草稿保存在信屿服务端，可在其他设备继续编辑，不会同步到邮箱服务商。</small></section> : selectedMessage
-          ? <Reader key={selectedMessage.id} message={selectedMessage} folders={folders.data ?? []} composing={replying} covering={covering}
+          ? <Reader key={selectedMessage.id} message={selectedMessage} folders={folders.data ?? []} composing={replying} covering={covering} backLabel={title}
               receiving={accountList.find(account => account.id === selectedMessage.accountId)?.receiveEnabled ?? true}
               accountName={accountList.length > 1 ? accountList.find(item => item.id === selectedMessage.accountId)?.name : undefined}
               onReply={(mode, includeAttachments = true) => reply({ messageId: selectedMessage.id, mode, includeAttachments })}
-              onBack={closeReader} onSelect={select} onFlag={patch => { void flag(selectedMessage, patch); }} onMoved={() => setSelected(null)} />
+              onBack={closeReader} onSelect={select} onFlag={patch => { void flag(selectedMessage, patch); }} onMoved={closeReader} />
           : <ReaderEmpty />}
       </div>
     </main>
+    {deletingDraftId && <ConfirmModal title="删除这封草稿？" description="这封本地草稿和不再使用的附件将被永久删除。"
+      confirmLabel={deletingDraftBusy ? '正在删除…' : '删除'} cancelLabel="取消" variant="danger" pending={deletingDraftBusy}
+      onClose={() => setDeletingDraftId(null)} onConfirm={() => { void confirmDeleteDraft(); }} />}
     {accountManager && !accountForm && <Suspense fallback={null}><AccountManager accounts={accountList} onClose={() => setAccountManager(false)}
       onAdd={() => setAccountForm({})} onEdit={account => setAccountForm({ id: account.id })} onRemoved={id => {
         if (filter.accountId === id || selected?.accountId === id) navigate({ view: 'inbox' });

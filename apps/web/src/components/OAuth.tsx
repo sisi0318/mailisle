@@ -15,7 +15,7 @@ export function OAuthClientFields({ provider, source, onSource, saved, clients }
       {global && <option value="global">服务商自定义客户端</option>}
       <option value="custom">仅此邮箱使用自己的客户端</option>
     </select></label>
-    {source === 'custom' && <div className="form-grid"><label>Client ID<input name="oauthClientId" autoComplete="off" /></label>
+    {source === 'custom' && <div className="form-grid"><label>Client ID<input name="oauthClientId" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} /></label>
       {provider === 'google' && <label>Client secret<input name="oauthClientSecret" type="password" autoComplete="new-password" /></label>}</div>}
     <div className="provider-note"><p>授权应用：{preset ? 'Mozilla Thunderbird' : '自定义应用'}</p>
       <a href={`/api/oauth/docs/${provider}`} target="_blank" rel="noreferrer">注册自己的 {provider === 'google' ? 'Google' : 'Microsoft'} 客户端 ↗</a>
@@ -45,7 +45,7 @@ export function OAuthAuthorization({ session, onSaved, onCancel, onBusy }: { ses
       <a className="button button-primary" href={session.authorizationUrl} target="_blank" rel="noreferrer">打开服务商授权页 ↗</a>
       <details className="advanced"><summary>浏览器在另一台设备，或无法自动回调</summary>
         <p className="hint">授权后浏览器可能显示“无法访问此网站”。这是因为回调指向本机。请复制地址栏的完整网址并粘贴在下面；不要分享这个网址。Docker 或 NAS 不需要额外开放回调端口。</p>
-        <form onSubmit={event => { event.preventDefault(); paste.mutate(); }}><label>完整回调网址<textarea value={url} onChange={event => setUrl(event.target.value)} placeholder={`${session.redirectUri}?code=…&state=…`} autoComplete="off" /></label>
+        <form onSubmit={event => { event.preventDefault(); paste.mutate(); }}><label>完整回调网址<textarea value={url} onChange={event => setUrl(event.target.value)} placeholder={`${session.redirectUri}?code=…&state=…`} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} /></label>
           <Button type="submit" disabled={!url.trim() || paste.isPending}>{paste.isPending ? '正在处理…' : '提交回调网址'}</Button></form>
       </details>
     </>}
