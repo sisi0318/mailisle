@@ -111,7 +111,7 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
       </select></label>
       <div className="discovery-row"><Button type="button" onClick={() => discover.mutate(email)} disabled={!email || discover.isPending}>{discover.isPending ? '正在查询…' : '在线查找服务器'}</Button>{providerHints && <a className="link-button" href={providerHints.helpUrl} target="_blank" rel="noreferrer">服务商帮助 ↗</a>}</div>
       {blocked && <p className="error" role="alert">此服务商的 OAuth 暂不支持。</p>}
-      {!useOAuth && !blocked && <label>{providerHints?.passwordLabel ?? '密码或授权码'}{accountId && '（留空不改）'}<input name="password" type="password" autoComplete="new-password" required={!accountId} placeholder={accountId ? '填写后同时更新收发信密码，发信可在下方另填' : ''} /></label>}
+      {!useOAuth && !blocked && <label>{providerHints?.passwordLabel ?? '密码或授权码'}{accountId && '（留空不改）'}<input name="password" type="password" autoComplete="new-password" required={!accountId} placeholder={accountId ? '同时更新收发信密码，发信可下方另填' : ''} /></label>}
       {/* Google and Microsoft are often only reachable through a proxy, so for them the field is not tucked away below. */}
       {oauthProvider && proxyFields}
       <details className="advanced" open={serversOpen ?? !preset}>
@@ -123,7 +123,7 @@ function AccountEditor({ accountId, settings, onClose, onSaved }: { accountId?: 
             <label>服务器<input name={`${protocol}Host`} required defaultValue={server?.host ?? ''} placeholder={`${protocol}.example.com`} /></label>
             <div className="server-options"><label>端口<input name={`${protocol}Port`} type="number" min={1} max={65535} required defaultValue={server?.port ?? (protocol === 'imap' ? 993 : 465)} /></label><label>加密<select name={`${protocol}Security`} defaultValue={server?.security ?? 'tls'}><option value="tls">TLS</option><option value="starttls">STARTTLS</option><option value="plain">不加密（仅本机）</option></select></label></div>
             <label>登录名（选填）<input name={`${protocol}User`} defaultValue={user} placeholder="默认用邮箱地址" /></label>
-            {protocol === 'smtp' && !useOAuth && <label>独立发信密码（选填）<input name="smtpPassword" type="password" autoComplete="new-password" placeholder={accountId ? '留空保留，或使用上面新填写的密码' : '默认与上面相同'} /></label>}
+            {protocol === 'smtp' && !useOAuth && <label>独立发信密码（选填）<input name="smtpPassword" type="password" autoComplete="new-password" placeholder={accountId ? '留空保留或随上栏更新' : '默认同上'} /></label>}
           </fieldset>;
         })}</div>
         <label style={!receiveEnabled || !sendEnabled ? { display: 'none' } : undefined}>已发送的邮件<select name="sentCopy" key={presetKey} defaultValue={preset?.sentCopy ?? settings?.sentCopy ?? 'append'}><option value="append">由本应用存入“已发送”（多数邮箱）</option><option value="server">服务商会自动保存（Gmail、Outlook）</option></select></label>

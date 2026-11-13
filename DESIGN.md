@@ -277,8 +277,6 @@ Thunderbird 源码里还有 Yahoo、AOL、Fastmail 等服务商的预置值,需�
 | 4 | 原生适配器:Gmail API、Microsoft Graph、JMAP | 按需做,换取更好的标签支持和同步效率 |
 | 5 | Proton sidecar、Electron 桌面壳、私有协议插件 | 按需做 |
 
-阶段 2 OAuth 已实现:Google/Microsoft XOAUTH2、本机及粘贴回调、加密令牌刷新、服务商及账号级客户端设置。两份教程的入口名称已更新。Gmail 和 Outlook 的真实账号已于 2026-11-11 用 Thunderbird 预置值走通授权;组织账号的策略兼容性仍待验收。自动化测试使用本地授权和邮件服务器。
-
 ## 10. 参考项目
 
 | 项目 | 参考点 |

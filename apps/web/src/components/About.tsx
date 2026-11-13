@@ -31,8 +31,8 @@ export function About({ page, onNavigate, onUpdates }: { page: AboutPage; onNavi
     <div className="about-links"><a className="button button-secondary" href={PROJECT_URL} target="_blank" rel="noreferrer"><ExternalLink size={15} aria-hidden />项目主页（GitHub）</a><Button onClick={onUpdates}>版本与更新</Button></div>
     <p className="about-repository">github.com/sisi0318/mailisle</p>
     <div className="settings-menu">
-      <button onClick={() => onNavigate('license')}><Scale size={20} /><span><strong>开源许可</strong><small>Apache-2.0 · 项目许可与署名</small></span><ChevronRight size={17} /></button>
-      <button onClick={() => onNavigate('components')}><Library size={20} /><span><strong>上游开源组件</strong><small>组件、版本与许可文件</small></span><ChevronRight size={17} /></button>
+      <button onClick={() => onNavigate('license')}><Scale size={20} /><span><strong>开源许可</strong><small>Apache-2.0 与署名</small></span><ChevronRight size={17} /></button>
+      <button onClick={() => onNavigate('components')}><Library size={20} /><span><strong>上游开源组件</strong></span><ChevronRight size={17} /></button>
       <button onClick={() => onNavigate('disclaimer')}><FileText size={20} /><span><strong>免责声明</strong><small>第三方权利与使用说明</small></span><ChevronRight size={17} /></button>
     </div>
   </div>;
@@ -54,7 +54,7 @@ function UpstreamComponents() {
     <a href="/legal/THIRD-PARTY-NOTICES.txt" download>下载全部组件声明</a>
     <label>查找组件<input type="search" value={search} onChange={event => { setSearch(event.target.value); setLimit(20); }} placeholder="名称或许可证" /></label>
     {data.isPending ? <p role="status">正在读取…</p> : data.error ? <p role="alert" className="error">{data.error.message}</p> : <>
-      <p className="hint">共 {components.length} 项，点击查看声明。</p>
+      <p className="hint">共 {components.length} 项</p>
       <div className="component-notices">{components.slice(0, limit).map(component => <ComponentLicense key={`${component.name}@${component.version}`} component={component} />)}</div>
       {components.length > limit && <Button onClick={() => setLimit(limit + 20)}>显示更多</Button>}
     </>}

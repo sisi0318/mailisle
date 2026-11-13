@@ -20,7 +20,6 @@ type Props = {
   onBack: () => void;
   onSelect: (message: Message) => void;
   onFlag: (patch: { seen?: boolean; starred?: boolean }) => void;
-  /** Called once the message has left the folder being viewed. */
   onMoved: () => void;
 };
 
@@ -56,7 +55,7 @@ export function Reader({ message, folders, accountName, covering, onReply, compo
       <Button variant="ghost" disabled={composing} onClick={() => onReply('reply')}><Reply size={17} aria-hidden />回复</Button>
       <Button variant="ghost" disabled={composing} aria-label="全部回复" title="全部回复" onClick={() => onReply('reply-all')}><ReplyAll size={17} aria-hidden /></Button>
       <Button variant="ghost" disabled={composing} aria-label="转发，带上附件" title="转发并携带附件（含内嵌图片文件）" onClick={() => onReply('forward')}><Forward size={17} aria-hidden /></Button>
-      <Button variant="ghost" disabled={composing} className="forward-text" title="转发，不带附件" onClick={() => onReply('forward', false)}>仅转发正文</Button>
+      <Button variant="ghost" disabled={composing} className="forward-text" onClick={() => onReply('forward', false)}>仅转发正文</Button>
       <span className="toolbar-separator" />
       <Button variant="ghost" disabled={!receiving} aria-label={message.seen ? '标为未读' : '标为已读'} title={!receiving ? '此邮箱已关闭收信' : message.seen ? '标为未读' : '标为已读'} onClick={() => onFlag({ seen: !message.seen })}>{message.seen ? <Mail size={17} aria-hidden /> : <MailOpen size={17} aria-hidden />}</Button>
       <Button variant="ghost" disabled={!receiving} aria-label={message.starred ? '取消星标' : '加星标'} title={!receiving ? '此邮箱已关闭收信' : message.starred ? '取消星标' : '加星标'} aria-pressed={message.starred} className={message.starred ? 'starred' : ''} onClick={() => onFlag({ starred: !message.starred })}><Star size={17} aria-hidden fill={message.starred ? 'currentColor' : 'none'} /></Button>

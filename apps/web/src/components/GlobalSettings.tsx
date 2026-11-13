@@ -35,7 +35,7 @@ export function GlobalSettings({ onClose, onUpdates }: { onClose: () => void; on
     saveClient.mutate({ provider, data: { clientId: String(data.get('clientId') ?? '').trim(), clientSecret: String(data.get('clientSecret') ?? '') || undefined } },
       { onSuccess: () => { const secret = form.elements.namedItem('clientSecret'); if (secret instanceof HTMLInputElement) secret.value = ''; } });
   }
-  return <Modal title="设置" description="邮箱连接与应用偏好。" className="global-settings" onClose={() => { if (!busy) onClose(); }}>
+  return <Modal title="设置" className="global-settings" onClose={() => { if (!busy) onClose(); }}>
     {page !== 'home' && <nav className="settings-breadcrumb" aria-label="设置导航">
       <button disabled={busy} onClick={() => navigate(providerPage ? 'apps' : aboutChild ? 'about' : 'home')} aria-label="返回上一级"><ArrowLeft size={16} /></button>
       <button disabled={busy} onClick={() => navigate('home')}>设置</button><ChevronRight size={12} aria-hidden />
@@ -45,13 +45,13 @@ export function GlobalSettings({ onClose, onUpdates }: { onClose: () => void; on
     </nav>}
     <h3 ref={heading} tabIndex={-1} className={`settings-heading ${page === 'home' ? 'sr-only' : ''}`}>{page === 'home' ? '选择设置类别' : titles[page]}</h3>
     {page === 'home' && <div className="settings-menu">
-      <button onClick={() => navigate('proxy')}><Network size={21} /><span><strong>网络代理</strong><small>{proxy.data?.configured ? '已设置全局代理' : '连接方式与全局代理'}</small></span><ChevronRight size={17} /></button>
+      <button onClick={() => navigate('proxy')}><Network size={21} /><span><strong>网络代理</strong><small>{proxy.data?.configured ? '已设置全局代理' : '未设置'}</small></span><ChevronRight size={17} /></button>
       <button onClick={() => navigate('apps')}><KeyRound size={21} /><span><strong>自定义授权应用</strong><small>Microsoft、Google 授权设置</small></span><ChevronRight size={17} /></button>
       <button onClick={() => navigate('updates')}><RefreshCw size={21} /><span><strong>更新设置</strong><small>检查频率、渠道与代理</small></span><ChevronRight size={17} /></button>
       <button onClick={() => navigate('about')}><Info size={21} /><span><strong>关于</strong><small>项目、开源许可与使用说明</small></span><ChevronRight size={17} /></button>
     </div>}
     {(page === 'about' || aboutChild) && <About page={page as AboutPage} onNavigate={navigate} onUpdates={onUpdates} />}
-    {page === 'apps' && <><p className="settings-intro">选择服务商，设置默认授权应用。每个邮箱也可单独配置。</p><div className="settings-menu">
+    {page === 'apps' && <><p className="settings-intro">设置默认授权应用，单个邮箱也可独立配置。</p><div className="settings-menu">
       {(['microsoft', 'google'] as const).map(provider => <button key={provider} onClick={() => navigate(provider)}>
         <span className="settings-provider-mark" aria-hidden>{provider === 'microsoft' ? 'MS' : 'G'}</span><span><strong>{titles[provider]}</strong><small>{clients.data?.[provider].custom ? '已配置自定义应用' : '使用预置授权应用'}</small></span><ChevronRight size={17} />
       </button>)}
@@ -68,8 +68,8 @@ export function GlobalSettings({ onClose, onUpdates }: { onClose: () => void; on
     {(['microsoft', 'google'] as const).map(provider => <div key={provider} hidden={page !== provider}>
       {!clients.data ? <p role="status">{clients.error?.message ?? '正在读取…'}</p> : <form className="settings-form" key={clients.data[provider].custom?.clientId ?? ''} onSubmit={event => submitClient(event, provider)}>
         <fieldset className="form-fields" disabled={busy}>
-          <label>Client ID（应用标识）<input name="clientId" required defaultValue={clients.data[provider].custom?.clientId} autoComplete="off" /></label>
-          {provider === 'google' && <label>Client secret（应用密钥）<input name="clientSecret" type="password" required={!clients.data[provider].custom?.hasSecret} placeholder={clients.data[provider].custom?.hasSecret ? '留空保留；更换 ID 时须重填' : ''} autoComplete="new-password" /></label>}
+          <label>Client ID<input name="clientId" required defaultValue={clients.data[provider].custom?.clientId} autoComplete="off" /></label>
+          {provider === 'google' && <label>Client secret<input name="clientSecret" type="password" required={!clients.data[provider].custom?.hasSecret} placeholder={clients.data[provider].custom?.hasSecret ? '留空保留；更换 ID 时须重填' : ''} autoComplete="new-password" /></label>}
           {provider === 'microsoft' && <p className="hint">公共桌面客户端，无需 Client secret。回调地址请填 http://localhost。</p>}
           <a href={`/api/oauth/docs/${provider}`} target="_blank" rel="noreferrer">查看注册教程 ↗</a>
           <div className="form-footer"><Button type="button" disabled={!clients.data[provider].custom} onClick={() => saveClient.mutate({ provider, data: null })}>恢复预置值</Button><Button type="submit" variant="primary">{saveClient.isPending ? '正在保存…' : '保存'}</Button></div>
@@ -81,14 +81,14 @@ export function GlobalSettings({ onClose, onUpdates }: { onClose: () => void; on
       <fieldset className="form-fields" disabled={busy}>
         <label className="settings-switch"><span><strong>检查更新</strong><small>自动检查，不会自动安装</small></span><input type="checkbox" role="switch" checked={updateValues.enabled} onChange={event => setUpdateDraft({ ...updateValues, enabled: event.target.checked })} /></label>
         <label className="checkbox-label"><input type="checkbox" checked={updateValues.useGlobalProxy} onChange={event => setUpdateDraft({ ...updateValues, useGlobalProxy: event.target.checked })} />使用全局代理</label>
-        <p className="hint">{updateValues.useGlobalProxy ? proxy.data?.configured ? `当前代理：${proxy.data.display}` : '未设置全局代理，将直接连接。' : '更新检查将直接连接。'}</p>
+        {updateValues.useGlobalProxy && <p className="hint">{proxy.data?.configured ? `当前代理：${proxy.data.display}` : '未设置全局代理，将直接连接。'}</p>}
         <label>检查频率<select disabled={!updateValues.enabled} value={updateValues.frequency} onChange={event => setUpdateDraft({ ...updateValues, frequency: event.target.value as UpdateSettings['frequency'] })}>
           <option value="hourly">每小时</option><option value="daily">每天</option><option value="weekly">每周</option><option value="on-open">每次打开网页</option>
         </select></label>
         <label>检查渠道<select value={updateValues.channel} onChange={event => setUpdateDraft({ ...updateValues, channel: event.target.value as UpdateSettings['channel'] })}>
           <option value="stable">正式版</option><option value="ci">CI 版</option><option value="source">源码提交</option>
         </select></label>
-        <p className="hint">{updateValues.channel === 'stable' ? '检查 GitHub 正式发布版本。' : updateValues.channel === 'ci' ? '检查 GitHub 预发布版本，可能不稳定。' : '检查 main 分支的最新提交。'}</p>
+        {updateValues.channel !== 'stable' && <p className="hint">{updateValues.channel === 'ci' ? '检查 GitHub 预发布版本，可能不稳定。' : '检查 main 分支的最新提交。'}</p>}
         <div className="form-footer"><Button type="button" onClick={onUpdates}>查看版本与更新</Button><Button variant="primary" type="submit">{saveUpdates.isPending ? '正在保存…' : '保存设置'}</Button></div>
       </fieldset>
       {saveUpdates.error && <p className="error" role="alert">{saveUpdates.error.message}</p>}

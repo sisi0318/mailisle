@@ -8,7 +8,6 @@ const MAX_CLIENTS = 10_000;
 export class LoginLimiter {
   private clients = new Map<string, { count: number; started: number }>();
 
-  /** Records an attempt and says whether it may proceed. */
   allow(client: string, now = Date.now()) {
     let entry = this.clients.get(client);
     if (!entry || now - entry.started > WINDOW_MS) {

@@ -313,7 +313,7 @@ async function readAccountUpdate(c: Context, service: MailService) {
   return parsed.data;
 }
 
-/** Reads a JSON request body. A SyntaxError from anywhere else is a fault in the server, not in the request. */
+/** A SyntaxError from anywhere else is a fault in the server, not in the request. */
 async function readJson(c: Context): Promise<unknown> {
   try { return await c.req.json(); }
   catch { throw new UserError('请求不是有效的 JSON'); }
@@ -324,7 +324,6 @@ function view(content: Buffer) {
   return new Uint8Array(content.buffer, content.byteOffset, content.byteLength) as Uint8Array<ArrayBuffer>;
 }
 
-/** The login counter a request belongs to. */
 function remoteClient(c: Context) {
   let peer: string | undefined;
   try { peer = getConnInfo(c).remote.address; } catch { /* Requests made in tests have no socket. */ }

@@ -46,7 +46,6 @@ export class BodyCache {
     if (!safeSegment.test(attachmentId)) throw new UserError('附件不存在', 404);
     return readFile(join(this.folder(messageId), `${attachmentId}.bin`));
   }
-  /** Deletes what is cached for these messages. */
   async remove(ids: Iterable<string>) {
     for (const id of ids) if (safeSegment.test(id)) await rm(join(this.directory, id), { recursive: true, force: true });
   }

@@ -78,7 +78,7 @@ export const providerPresets: ProviderPreset[] = [
     imap: { host: 'outlook.office365.com', port: 993, security: 'tls' },
     smtp: { host: 'smtp-mail.outlook.com', port: 587, security: 'starttls' },
     sentCopy: 'server', passwordLabel: 'OAuth 登录', requiresOAuth: true,
-    hint: '使用 Microsoft OAuth 登录。请在 Outlook.com 邮件设置中开启 IMAP。',
+    hint: '请在 Outlook.com 邮件设置中开启 IMAP。',
     helpUrl: 'https://support.microsoft.com/en-us/outlook/pop-imap-and-smtp-settings-for-outlook-com',
   },
   {
@@ -86,7 +86,7 @@ export const providerPresets: ProviderPreset[] = [
     imap: { host: 'outlook.office365.com', port: 993, security: 'tls' },
     smtp: { host: 'smtp.office365.com', port: 587, security: 'starttls' },
     sentCopy: 'server', passwordLabel: 'OAuth 登录', requiresOAuth: true,
-    hint: '使用 Microsoft OAuth 登录。组织管理员需要允许 IMAP、SMTP AUTH 和相应的委托权限。',
+    hint: '组织管理员需要允许 IMAP、SMTP AUTH 和相应的委托权限。',
     helpUrl: 'https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth',
   },
 ];

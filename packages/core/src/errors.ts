@@ -22,7 +22,6 @@ export function publicError(error: unknown): string {
   return '邮件操作未完成，请稍后重试';
 }
 
-/** HTTP status for an error that reached the API boundary. */
 export function errorStatus(error: unknown): 400 | 404 | 409 | 413 | 500 | 502 | 503 {
   if (error instanceof UserError) return error.status;
   const details = error as { code?: unknown; authenticationFailed?: boolean; path?: unknown } | undefined;

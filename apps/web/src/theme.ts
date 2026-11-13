@@ -26,7 +26,6 @@ export function setTheme(theme: Theme) {
   for (const listener of listeners) listener();
 }
 
-/** The chosen theme, shared by every component that shows the switch. */
 export function useTheme() {
   return useSyncExternalStore(listener => { listeners.add(listener); return () => { listeners.delete(listener); }; }, () => current);
 }

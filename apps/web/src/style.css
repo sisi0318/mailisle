@@ -315,7 +315,6 @@ legend{font-size:13px;padding:0 6px;color:var(--text-2)}
 .login-intro{background:var(--login-intro);padding:60px 12% 40px;overflow:hidden;display:flex;flex-direction:column}
 .login-intro .brand{margin-bottom:90px}
 .login-intro h1{font-size:42px;line-height:1.5;font-weight:450;letter-spacing:2px;margin:20px 0}
-.login-intro>p:not(.eyebrow){font-size:14px;color:var(--text-2);line-height:1.8}
 /* In the flow, so that a short window pushes it down instead of laying it over the artwork. */
 .login-footnote{margin-top:auto;padding-top:24px;font-size:13px;color:var(--text-3)}
 .login-panel{display:flex;justify-content:center;align-items:center;padding:60px}

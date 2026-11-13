@@ -32,7 +32,6 @@ export function Modal({ title, description, children, onClose, wide = false, cla
   </Dialog.Root>;
 }
 
-/** Whether a media query matches right now, kept up to date. */
 export function useMedia(query: string) {
   const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
   useEffect(() => {

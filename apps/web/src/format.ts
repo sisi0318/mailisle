@@ -3,7 +3,6 @@ import type { Folder, FolderRole, Message } from '@mail/shared';
 const day = 86_400_000;
 const pad = (value: number) => String(value).padStart(2, '0');
 
-/** Compact date for list rows: the time today, "昨天", month and day this year, the full date before that. */
 export function listDate(timestamp: number, now = new Date()): string {
   if (!timestamp) return '';
   const date = new Date(timestamp);

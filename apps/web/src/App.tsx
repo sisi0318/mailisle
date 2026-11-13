@@ -259,7 +259,6 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
   const replying = prepare.isPending || !canSend;
   const reply = prepare.mutate;
 
-  // Single-key shortcuts, as in other mail clients. They stay out of the way while typing or while a dialog is open.
   useEffect(() => {
     const keys = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
@@ -299,7 +298,7 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     : !accountList.length ? <><Inbox size={30} strokeWidth={1.3} aria-hidden /><h3>先连接一个邮箱</h3><p>连接后，邮件会同步到运行信屿的主机。</p><Button variant="primary" onClick={() => setAccountForm({})}><Plus size={15} aria-hidden />连接邮箱</Button></>
     : account?.receiveEnabled === false ? <><Send size={30} strokeWidth={1.3} aria-hidden /><h3>此邮箱仅用于发信</h3><p>需要收信时，可在邮箱设置中开启。</p></>
     : stillSyncing ? <><RefreshCw size={30} strokeWidth={1.3} className="spin" aria-hidden /><h3>正在同步邮件…</h3><p>第一次同步需要一些时间，来信会陆续出现在这里。</p></>
-    : <><Inbox size={30} strokeWidth={1.3} aria-hidden /><h3>这里没有邮件</h3><p>有新邮件时会出现在这里。</p></>;
+    : <><Inbox size={30} strokeWidth={1.3} aria-hidden /><h3>这里没有邮件</h3></>;
   const sidebarProps = { accounts: accountList, folders: folders.data ?? [], filter, syncing: activeSync, connected, counts: counts.data,
     expandedAccountId, onToggleAccount: toggleAccount,
     onNavigate: navigate, onClose: () => setMobileNav(false),
