@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { BodyCache, hashPassword, MailService, UploadStore, Vault } from '@mail/core';
-import { MAX_ATTACHMENT_BYTES } from '@mail/shared';
+import { MAX_ATTACHMENT_BYTES, RAW_PREVIEW_BYTES } from '@mail/shared';
 import { createApp } from './app';
 import { UpdateChecker } from './updates';
 import { accountConfig, database, record, seedAccount } from '../../../tests/fixtures';
@@ -112,6 +112,37 @@ describe('HTTP authentication and local data', () => {
     expect(download.headers.get('content-disposition')).toMatch(/^attachment;/);
     expect(download.headers.get('content-type')).toBe('application/octet-stream');
     expect(Buffer.from(await download.arrayBuffer())).toEqual(Buffer.from(png, 'base64'));
+  });
+
+  it('serves raw RFC 822 preview JSON, truncates safely at the byte limit, and downloads unmodified bytes', async () => {
+    const { inbox } = seedAccount(store);
+    store.applyBatch(inbox, [record(1, { subject: '测试:原始邮件' })]);
+    const id = (store.sqlite.prepare('SELECT id FROM messages').get() as { id: string }).id;
+    const rawSmall = Buffer.from('Subject: small\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n你好');
+    await service.cache.saveRaw(id, rawSmall);
+
+    expect((await request(`/messages/${id}/raw`)).status).toBe(401);
+    const cookie = await login();
+    const smallJson = await (await request(`/messages/${id}/raw`, 'GET', undefined, cookie)).json();
+    expect(smallJson).toEqual({ content: rawSmall.toString('utf8'), size: rawSmall.byteLength, truncated: false });
+
+    const smallDownload = await request(`/messages/${id}/raw?download=1`, 'GET', undefined, cookie);
+    expect(smallDownload.headers.get('content-type')).toBe('message/rfc822');
+    expect(smallDownload.headers.get('content-disposition')).toContain('.eml');
+    expect(Buffer.from(await smallDownload.arrayBuffer())).toEqual(rawSmall);
+
+    const header = Buffer.from('Subject: big\r\n\r\n');
+    const pad = Buffer.alloc(RAW_PREVIEW_BYTES - header.byteLength - 1, 'a');
+    const rawLarge = Buffer.concat([header, pad, Buffer.from('中', 'utf8'), Buffer.from('tail')]);
+    await service.cache.saveRaw(id, rawLarge);
+
+    const largeJson = await (await request(`/messages/${id}/raw`, 'GET', undefined, cookie)).json();
+    expect(largeJson.truncated).toBe(true);
+    expect(largeJson.size).toBe(rawLarge.byteLength);
+    expect(largeJson.content).not.toContain('\uFFFD');
+
+    const largeDownload = await request(`/messages/${id}/raw?download=1`, 'GET', undefined, cookie);
+    expect(Buffer.from(await largeDownload.arrayBuffer())).toEqual(rawLarge);
   });
 
   it('exposes editable settings without stored credentials', async () => {

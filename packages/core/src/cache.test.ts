@@ -16,11 +16,20 @@ it('decodes GB18030 mail and stores binary attachments under generated filenames
   ].join('\r\n'));
   const cache = new BodyCache(directory);
   expect(await cache.read('message-1')).toBeNull();
+  expect(await cache.raw('message-1')).toBeNull();
   const body = await cache.save('message-1', source);
   expect(body.text.trim()).toBe('中文');
   expect(body.attachments[0].size).toBe(5);
   expect(await cache.attachment('message-1', '0')).toEqual(Buffer.from([0, 1, 2, 3, 255]));
+  expect(await cache.raw('message-1')).toEqual(source);
   expect(await new BodyCache(directory).read('message-1')).toEqual(body);
+});
+
+it('backfills raw RFC 822 source independently for legacy cache entries', async () => {
+  const cache = new BodyCache(directory);
+  const raw = Buffer.from('Subject: legacy\r\n\r\nhello');
+  await cache.saveRaw('legacy-1', raw);
+  expect(await cache.raw('legacy-1')).toEqual(raw);
 });
 
 it('extracts searchable text from HTML-only mail without including scripts or styles', async () => {
@@ -72,6 +81,7 @@ it('removes cached mail whose message is gone and leaves everything else in the 
 it('refuses IDs that would leave the cache directory and re-fetches a damaged entry', async () => {
   const cache = new BodyCache(directory);
   await expect(cache.read('../outside')).rejects.toThrow('邮件不存在');
+  await expect(cache.raw('../outside')).rejects.toThrow('邮件不存在');
   await expect(cache.attachment('message-1', '../../secret')).rejects.toThrow('附件不存在');
   await mkdir(join(directory, 'damaged')); await writeFile(join(directory, 'damaged', 'body.json'), '{"text":');
   expect(await cache.read('damaged')).toBeNull();

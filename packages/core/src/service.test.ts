@@ -402,6 +402,30 @@ it('upgrades an old CID cache once and tells the reader to refresh', async () =>
   expect(adapter.source).toHaveBeenCalledOnce();
 });
 
+it('serves cached raw source offline, coalesces uncached loads, and backfills legacy entries', async () => {
+  const gate = deferred();
+  const uncachedSource = Buffer.from('Subject: uncached\r\n\r\nfresh raw');
+  adapter.source.mockImplementationOnce(async () => { await gate.promise; return uncachedSource; });
+  const pending = Promise.all([service.raw(messageId), service.raw(messageId)]);
+  gate.resolve();
+  const [first, second] = await pending;
+  expect(first).toEqual(uncachedSource);
+  expect(second).toEqual(uncachedSource);
+  expect(adapter.source).toHaveBeenCalledOnce();
+
+  await service.cache.remove([messageId]);
+  await legacyCidCache();
+  const legacySource = Buffer.from('Subject: legacy\r\n\r\nbackfilled raw');
+  adapter.source.mockResolvedValueOnce(legacySource);
+  expect(await service.raw(messageId)).toEqual(legacySource);
+  expect(adapter.source).toHaveBeenCalledTimes(2);
+  expect(await service.cache.raw(messageId)).toEqual(legacySource);
+
+  await service.updateAccount(accountId, accountUpdateSchema.parse({ ...service.accountSettings(accountId), receiveEnabled: false }));
+  expect(await service.raw(messageId)).toEqual(legacySource);
+  expect(adapter.source).toHaveBeenCalledTimes(2);
+});
+
 async function legacyCidCache() {
   const target = join(directory, messageId);
   await mkdir(target, { recursive: true });

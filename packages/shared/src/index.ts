@@ -182,9 +182,11 @@ export type Message = Omit<MailMetadata, 'uid' | 'remoteId' | 'providerThreadId'
   starred: boolean;
   cached: boolean;
 };
+export const RAW_PREVIEW_BYTES = 512 * 1024;
 export type Attachment = { id: string; filename: string; mimeType: string; size: number; contentId?: string };
 export type InlineImage = { attachmentId: string; contentId: string; dataUrl: string };
 export type MessageBody = { text: string; html: string | null; attachments: Attachment[]; inlineImages?: InlineImage[]; cc?: Address[] };
+export type RawMessage = { content: string; size: number; truncated: boolean };
 export type MessagePage = { messages: Message[]; total: number; nextOffset: number | null };
 export type SyncEvent = { type: 'settings' } | { type: 'sync' | 'change' | 'draft'; accountId: string; messageId?: string; contentOnly?: boolean; state?: 'running' | 'idle' | 'error'; error?: string };
 export type BuildInfo = { version: string; revision: string | null; localChanges: boolean | null; builtAt: string };

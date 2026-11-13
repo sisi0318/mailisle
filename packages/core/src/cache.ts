@@ -25,10 +25,23 @@ export class BodyCache {
     try { return JSON.parse(await readFile(join(this.folder(id), 'body.json'), 'utf8')) as CachedBody; }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError) return null; throw error; }
   }
+  /** Reads the raw RFC 822 source if cached; returns null for missing or unbackfilled entries. */
+  async raw(id: string): Promise<Buffer | null> {
+    try { return await readFile(join(this.folder(id), 'source.eml')); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+  }
+  async saveRaw(id: string, source: Buffer): Promise<void> {
+    const directory = this.folder(id);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, 'source.eml.tmp'), source);
+    await rename(join(directory, 'source.eml.tmp'), join(directory, 'source.eml'));
+  }
   async save(id: string, source: Buffer): Promise<CachedBody> {
     const email = await PostalMime.parse(source);
     const directory = this.folder(id);
     await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, 'source.eml.tmp'), source);
+    await rename(join(directory, 'source.eml.tmp'), join(directory, 'source.eml'));
     const attachments = await Promise.all(email.attachments.map(async (attachment, i) => {
       const content = typeof attachment.content === 'string' ? Buffer.from(attachment.content, 'base64') : Buffer.from(new Uint8Array(attachment.content));
       await writeFile(join(directory, `${i}.bin.tmp`), content);

@@ -28,6 +28,7 @@ export class MailService {
   private stopped = false;
   private prefetcher: BodyPrefetcher;
   private bodyLoads = new Map<string, { accountId: string; promise: Promise<MessageBody> }>();
+  private rawLoads = new Map<string, { accountId: string; promise: Promise<Buffer> }>();
   private changingAccounts = new Map<string, { phase: string; startedAt: number }>();
   private operations = new Map<string, Map<Promise<unknown>, string>>();
   private epochs = new Map<string, AccountEpoch>();
@@ -190,6 +191,24 @@ export class MailService {
       return cached;
     }
     return this.loadBody(id);
+  }
+  /** Full RFC 822 source bytes, serving from cache when available (including offline) and fetching on demand otherwise. */
+  async raw(id: string): Promise<Buffer> {
+    this.requireMessage(id);
+    const cached = await this.cache.raw(id);
+    if (cached) return cached;
+    const bodyLoad = this.bodyLoads.get(id);
+    if (bodyLoad) {
+      await bodyLoad.promise;
+      const loaded = await this.cache.raw(id);
+      if (loaded) return loaded;
+    }
+    if (!await this.cache.stored(id)) {
+      await this.loadBody(id);
+      const loaded = await this.cache.raw(id);
+      if (loaded) return loaded;
+    }
+    return this.loadRaw(id);
   }
   async flags(id: string, update: FlagUpdate) {
     const message = this.requireMessage(id);
@@ -356,6 +375,21 @@ export class MailService {
       return body;
     }, 'receive', 'body').finally(() => { if (this.bodyLoads.get(id)?.promise === promise) this.bodyLoads.delete(id); });
     this.bodyLoads.set(id, { accountId: message.accountId, promise });
+    return promise;
+  }
+  private async loadRaw(id: string): Promise<Buffer> {
+    const existing = this.rawLoads.get(id);
+    if (existing) return existing.promise;
+    const message = this.requireMessage(id);
+    const location = this.store.messageLocations(id)[0];
+    if (!location) throw new Error('邮件已被删除');
+    const promise = this.withAdapter(message.accountId, async (adapter, checkCurrent) => {
+      const source = await adapter.source(location.folder, location.uid);
+      checkCurrent();
+      await this.cache.saveRaw(id, source);
+      return source;
+    }, 'receive', 'raw').finally(() => { if (this.rawLoads.get(id)?.promise === promise) this.rawLoads.delete(id); });
+    this.rawLoads.set(id, { accountId: message.accountId, promise });
     return promise;
   }
   private async syncAccount(id: string, epoch: AccountEpoch) {
@@ -535,6 +569,7 @@ export class MailService {
     if (sync) tasks.push({ kind: 'sync-loop', done: sync });
     this.adapters.delete(id); this.watchers.delete(id); this.operations.delete(id); this.running.delete(id); this.pendingSync.delete(id);
     for (const [messageId, load] of this.bodyLoads) if (load.accountId === id) this.bodyLoads.delete(messageId);
+    for (const [messageId, load] of this.rawLoads) if (load.accountId === id) this.rawLoads.delete(messageId);
     const prefetch = this.prefetcher.cancel(id);
     previous.controller.abort(new UserError('邮箱设置已变更，请重试', 409));
     stopWatch?.();

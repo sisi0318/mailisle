@@ -1,14 +1,18 @@
-import { useEffect, useRef, useState, type ButtonHTMLAttributes, type HTMLAttributes, type KeyboardEvent, type ReactNode, type Ref } from 'react';
+import { useCallback, useEffect, useRef, useState, type ButtonHTMLAttributes, type HTMLAttributes, type KeyboardEvent, type ReactNode, type Ref } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { X } from 'lucide-react';
+import { Check, Copy, X } from 'lucide-react';
 import { splitFileName } from '../format';
 
 declare module 'react' {
   interface HTMLAttributes<T> {
     focusgroup?: string;
+  }
+  interface ButtonHTMLAttributes<T> {
+    command?: string;
+    commandfor?: string;
   }
   interface InputHTMLAttributes<T> {
     switch?: string | boolean;
@@ -145,6 +149,80 @@ export function Toolbar({ className, onKeyDown, onFocusCapture, children, ...pro
 export function FileName({ name, className }: { name: string; className?: string }) {
   const { stem, ext } = splitFileName(name);
   return <span className={clsx('filename', className)}><span className="filename-stem">{stem}</span>{ext}</span>;
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.cssText = 'position:fixed;inset-block-start:-9999px';
+    document.body.append(area);
+    area.select();
+    const ok = document.execCommand('copy');
+    area.remove();
+    return ok;
+  }
+}
+
+type CopyButtonProps = {
+  targetId: string;
+  label?: string;
+  feedback?: string;
+  className?: string;
+  variant?: VariantProps<typeof button>['variant'];
+  disabled?: boolean;
+  children?: ReactNode;
+};
+
+/** Copies text from `targetId` using Invoker Commands where supported and announces status in an adjacent live region. */
+export function CopyButton({ targetId, label, feedback = '已复制', className, variant = 'secondary', disabled = false, children = '复制' }: CopyButtonProps) {
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const timerRef = useRef<number | undefined>(undefined);
+  const lastTipRef = useRef('');
+  const [copied, setCopied] = useState(false);
+  const [tip, setTip] = useState('');
+
+  const runCopy = useCallback(async () => {
+    const text = document.getElementById(targetId)?.textContent ?? '';
+    if (!text) return;
+    const ok = await copyText(text);
+    window.clearTimeout(timerRef.current);
+    const base = ok ? feedback : '复制失败';
+    const next = lastTipRef.current === base ? `${base}\u00A0` : base;
+    lastTipRef.current = next;
+    setCopied(ok);
+    setTip(next);
+    timerRef.current = window.setTimeout(() => {
+      setCopied(false);
+      setTip('');
+    }, 2000);
+  }, [targetId, feedback]);
+
+  useEffect(() => () => window.clearTimeout(timerRef.current), []);
+
+  useEffect(() => {
+    if (!('CommandEvent' in window)) return;
+    const onCommand = (event: Event) => {
+      const cmd = event as Event & { command?: string; source?: EventTarget | null };
+      if (cmd.command !== '--copy' || cmd.source !== buttonRef.current) return;
+      void runCopy();
+    };
+    document.addEventListener('command', onCommand, true);
+    return () => document.removeEventListener('command', onCommand, true);
+  }, [runCopy]);
+
+  return <span className="copy-action">
+    <Button ref={buttonRef} type="button" variant={variant} className={className} aria-label={label} disabled={disabled}
+      command="--copy" commandfor={targetId} onClick={() => { if (!('CommandEvent' in window)) void runCopy(); }}>
+      {copied ? <Check size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
+      {children}
+    </Button>
+    <span className="copy-tip" role="status" data-visible={tip ? '' : undefined}>{tip}</span>
+  </span>;
 }
 
 export function useMedia(query: string) {

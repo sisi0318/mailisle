@@ -9,7 +9,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { streamSSE } from 'hono/streaming';
 import { bodyLimit } from 'hono/body-limit';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { accountSchema, accountUpdateSchema, composeSchema, discoverySchema, draftSchema, flagsSchema, listSchema, loginSchema, MAX_ATTACHMENT_BYTES, moveSchema, sendSchema, type SyncEvent } from '@mail/shared';
+import { accountSchema, accountUpdateSchema, composeSchema, discoverySchema, draftSchema, flagsSchema, listSchema, loginSchema, MAX_ATTACHMENT_BYTES, moveSchema, RAW_PREVIEW_BYTES, sendSchema, type RawMessage, type SyncEvent } from '@mail/shared';
 import { discoverAccount, errorStatus, publicError, UserError, verifyPassword, type MailService } from '@mail/core';
 import { accountOrderSchema, createFolderSchema, globalProxySchema, updateSettingsSchema, oauthStartSchema, oauthProviderSchema, oauthClientUpdateSchema, oauthCallbackSchema } from '@mail/shared';
 import { createAccessPolicy } from './access';
@@ -238,6 +238,23 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     await next();
   });
   app.get('/api/messages/:id/body', async c => c.json(await service.body(c.req.param('id'))));
+  app.get('/api/messages/:id/raw', async c => {
+    const id = c.req.param('id');
+    const source = await service.raw(id);
+    if (c.req.query('download') === '1') {
+      const subject = service.store.message(id)?.subject ?? '';
+      const baseName = (subject || 'message').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80) || 'message';
+      const filename = `${baseName}.eml`;
+      c.header('Content-Disposition', `attachment; filename="message.eml"; filename*=UTF-8''${encodeURIComponent(filename).replace(/'/g, '%27')}`);
+      c.header('Content-Type', 'message/rfc822');
+      return c.body(view(source));
+    }
+    const truncated = source.byteLength > RAW_PREVIEW_BYTES;
+    const slice = truncated ? source.subarray(0, RAW_PREVIEW_BYTES) : source;
+    const content = new TextDecoder('utf-8').decode(slice, { stream: truncated });
+    const payload: RawMessage = { content, size: source.byteLength, truncated };
+    return c.json(payload);
+  });
   app.get('/api/messages/:id/thread', c => c.json(service.store.thread(service.store.message(c.req.param('id'))!.threadId)));
   app.post('/api/messages/:id/draft', async c => {
     const parsed = composeSchema.safeParse(await readJson(c));

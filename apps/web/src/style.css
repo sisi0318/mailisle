@@ -74,7 +74,7 @@ legend{font-size:0.8125rem;padding:0 6px;color:var(--text-2)}
 .button-ghost[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent-ink)}
 .button-ghost.starred,.button-ghost.starred[aria-pressed="true"]{color:var(--star)}
 .button-danger{color:var(--danger);background:var(--danger-soft)}
-.link-button{font-size:0.8125rem;font-weight:400;color:var(--accent-ink)}
+.link-button{display:inline-flex;align-items:center;min-block-size:24px;font-size:0.8125rem;font-weight:400;color:var(--accent-ink)}
 .link-button:hover{text-decoration:underline}
 .brand{display:flex;gap:10px;align-items:center;font-size:1.5rem;letter-spacing:-1px;font-weight:650;color:var(--brand)}
 .brand-dot{color:#95af66}
@@ -457,10 +457,19 @@ legend{font-size:0.8125rem;padding:0 6px;color:var(--text-2)}
 .legal-notice summary small{font-size:0.75rem;color:var(--text-3);margin-left:6px}
 .legal-component-body{display:grid;gap:12px;padding-top:14px}
 .legal-notice>.license-text{margin-top:14px}
+.raw-mail-modal{width:min(820px,calc(100vw - 32px));display:flex;flex-direction:column;overflow:hidden}
+.raw-mail-bar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px 16px;margin-bottom:12px}
+.raw-mail-meta{font-size:0.8125rem;color:var(--text-3)}
+.raw-mail-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.raw-mail-actions a{text-decoration:none}
+.raw-mail-source{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;margin:0;padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:var(--panel);font-family:ui-monospace,Consolas,monospace;font-size:0.75rem;line-height:1.6;color:var(--text-2);white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4}
+.copy-action{position:relative;display:inline-flex;align-items:center}
+.copy-tip{position:absolute;inset-block-end:calc(100% + 6px);inset-inline-start:50%;transform:translateX(-50%);padding:4px 9px;border-radius:6px;background:var(--text);color:var(--surface);font-size:0.75rem;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .15s}
+.copy-tip[data-visible]{opacity:1}
 
 @media (pointer: coarse){
   input:not([type="checkbox"]):not([type="radio"]),select,textarea{font-size:max(1rem,1em)}
-  .button,.mail-actions-items>button,.move-menu-items button{min-height:44px}
+  .button,.mail-actions-items>button,.move-menu-items button,.link-button{min-block-size:44px}
   .mail-more,.sidebar-label button,.password-field button{min-width:44px;min-height:44px}
 }
 
@@ -476,10 +485,12 @@ legend{font-size:0.8125rem;padding:0 6px;color:var(--text-2)}
 
 @media (prefers-reduced-motion: reduce){
   .spin{animation-duration:6s}
+  .copy-tip{transition:none}
 }
 
 @media (forced-colors: active){
-  .button,.modal,.move-menu-list[popover],.mail-actions-menu[popover],.notice[popover="manual"],.main-nav button.active,.folder-list button.active{border:1px solid ButtonBorder}
+  .button,.modal,.move-menu-list[popover],.mail-actions-menu[popover],.notice[popover="manual"],.main-nav button.active,.folder-list button.active,.raw-mail-source,.copy-tip{border:1px solid ButtonBorder}
+  .copy-tip{background:Canvas;color:CanvasText}
   .button-primary{background:Highlight;color:HighlightText;border-color:Highlight}
   .message-row.selected{outline:2px solid Highlight;outline-offset:-2px}
   .settings-switch input{background:ButtonFace;border:1px solid ButtonBorder}

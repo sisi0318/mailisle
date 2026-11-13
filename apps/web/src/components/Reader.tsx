@@ -1,11 +1,11 @@
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Archive, Download, FolderInput, Forward, Image, ImageOff, Mail, MailOpen, Reply, ReplyAll, Star, Trash2 } from 'lucide-react';
-import type { Address, ComposeMode, Folder, FolderRole, Message, MessageBody } from '@mail/shared';
+import { RAW_PREVIEW_BYTES, type Address, type ComposeMode, type Folder, type FolderRole, type Message, type MessageBody, type RawMessage } from '@mail/shared';
 import { api, json } from '../api';
 import { fileSize, folderList, fullDate, listDate, senderName } from '../format';
 import { mailDocument } from '../mail-html';
-import { Button, FileName, Toolbar } from './ui';
+import { Button, CopyButton, FileName, Modal, Toolbar } from './ui';
 
 type Props = {
   message: Message;
@@ -32,6 +32,7 @@ export function Reader({ message, folders, accountName, covering, backLabel, onR
   const [expanded, setExpanded] = useState(false);
   // Asked for per message: this component is created anew for each one, so the choice does not carry over.
   const [showImages, setShowImages] = useState(false);
+  const [showingRaw, setShowingRaw] = useState(false);
   const body = useQuery({ queryKey: ['body', message.id], queryFn: () => api<MessageBody>(`/messages/${message.id}/body`), retry: false });
   const thread = useQuery({ queryKey: ['thread', message.id], queryFn: () => api<Message[]>(`/messages/${message.id}/thread`) });
   const move = useMutation({ mutationFn: (folderId: string) => api(`/messages/${message.id}/move`, json('POST', { folderId })),
@@ -76,7 +77,8 @@ export function Reader({ message, folders, accountName, covering, backLabel, onR
           {copied.length > 0 && <p>抄送 {expanded ? people(copied) : copied.map(item => item.name || item.address).join('、')}</p>}
           {replyTo.length > 0 && <p>回复将发往 {people(replyTo)}</p>}
           <p className="sender-meta"><time dateTime={message.date ? new Date(message.date).toISOString() : undefined}>{fullDate(message.date)}</time>{accountName && <span className="account-badge">{accountName}</span>}
-            <button type="button" className="link-button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? '收起' : '完整地址'}</button></p>
+            <button type="button" className="link-button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? '收起' : '完整地址'}</button>
+            <button type="button" className="link-button" onClick={() => setShowingRaw(true)}>原始邮件</button></p>
         </div>
       </div>
       {move.error && <p role="alert" className="error">{move.error.message}</p>}
@@ -104,7 +106,31 @@ export function Reader({ message, folders, accountName, covering, backLabel, onR
         : rendered ? <iframe title="邮件正文" className="mail-frame" sandbox="allow-popups allow-popups-to-escape-sandbox" srcDoc={rendered.document} />
         : <pre className="plain-body">{body.data.text || '（邮件没有正文）'}</pre>}
     </div>
+    {showingRaw && <RawMessageModal messageId={message.id} subject={message.subject} onClose={() => setShowingRaw(false)} />}
   </section>;
+}
+
+function RawMessageModal({ messageId, subject, onClose }: { messageId: string; subject: string; onClose: () => void }) {
+  const codeId = useId();
+  const raw = useQuery({ queryKey: ['raw', messageId], queryFn: () => api<RawMessage>(`/messages/${messageId}/raw`), retry: false });
+
+  return <Modal title="原始邮件" description={subject || '（无主题）'} wide className="raw-mail-modal" onClose={onClose}>
+    {raw.isPending ? <p className="loading">正在读取原始邮件…</p>
+      : raw.error ? <div className="list-state"><p className="error">{raw.error.message}</p><Button onClick={() => { void raw.refetch(); }}>重新加载</Button></div>
+      : <>
+        <div className="raw-mail-bar">
+          <p className="raw-mail-meta">
+            <span>大小 {fileSize(raw.data.size)}</span>
+            {raw.data.truncated && <span> · 仅预览前 {fileSize(RAW_PREVIEW_BYTES)}，完整内容请下载 .eml</span>}
+          </p>
+          <div className="raw-mail-actions">
+            <CopyButton targetId={codeId}>{raw.data.truncated ? '复制预览' : '复制源码'}</CopyButton>
+            <a className="button button-secondary" href={`/api/messages/${messageId}/raw?download=1`} download><Download size={16} aria-hidden />下载 .eml</a>
+          </div>
+        </div>
+        <pre className="raw-mail-source"><code id={codeId}>{raw.data.content}</code></pre>
+      </>}
+  </Modal>;
 }
 
 /** A menu instead of a select: arrow keys in a closed select change its value, which moved mail by accident. */
