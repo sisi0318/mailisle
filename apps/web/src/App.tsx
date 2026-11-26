@@ -1,13 +1,15 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { FileText, Inbox, Mail, Menu, Plus, RefreshCw, Search, Send, TriangleAlert, X } from 'lucide-react';
-import type { Account, ComposeMode, Draft, DraftSummary, Folder, Message, MessagePage, SyncEvent, UnreadCounts, UpdateState } from '@mail/shared';
+import { MAX_BATCH_MESSAGES, type Account, type ComposeMode, type Draft, type DraftSummary, type Folder, type Message, type MessageAction, type MessageActionResult, type MessagePage, type SyncEvent, type UnreadCounts, type UpdateState } from '@mail/shared';
 import { api, json } from './api';
 import { accountColor, folderList } from './format';
 import { Button, ConfirmModal, useMedia } from './components/ui';
 import { Login, SessionLock } from './components/Login';
 import { MessageList } from './components/MessageList';
-import { Reader, ReaderEmpty } from './components/Reader';
+import { RawMessageModal, Reader, ReaderEmpty } from './components/Reader';
+import { QuickFilters, type MailFilters } from './components/QuickFilters';
+import { notifyNewMail, onOpenMailNotification } from './notifications';
 import { Sidebar, type Filter } from './components/Sidebar';
 import { DraftList } from './components/DraftList';
 import type { MailActionTarget } from './components/MailActions';
@@ -33,6 +35,15 @@ export default function App() {
   // when the session runs out, or the service is briefly unreachable, a message being written survives.
   const [opened, setOpened] = useState(false);
   const [leaving, setLeaving] = useState(false);
+  const [openedNotification, setOpenedNotification] = useState<{ messageId?: string }>();
+  const consumeNotification = useCallback(() => setOpenedNotification(undefined), []);
+  useEffect(() => {
+    if (window.location.hash.startsWith('#mail=')) {
+      setOpenedNotification({ messageId: window.location.hash.slice(6) });
+      history.replaceState(history.state, '', window.location.pathname + window.location.search);
+    }
+    return onOpenMailNotification(messageId => setOpenedNotification({ messageId }));
+  }, []);
   useEffect(() => { if (authenticated) setOpened(true); }, [authenticated]);
   useEffect(() => {
     const expire = () => query.setQueryData(['session'], { authenticated: false });
@@ -55,12 +66,14 @@ export default function App() {
   }
   const locked = !authenticated && !leaving;
   return <>
-    <Mailbox locked={locked} onLogout={() => { void logout(); }} />
+    <Mailbox locked={locked} openedNotification={openedNotification} consumeNotification={consumeNotification} onLogout={() => { void logout(); }} />
     {locked && <SessionLock onLogin={login} />}
   </>;
 }
 
-function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }) {
+function Mailbox({ locked, openedNotification, consumeNotification, onLogout }: {
+  locked: boolean; openedNotification?: { messageId?: string }; consumeNotification: () => void; onLogout: () => void;
+}) {
   const query = useQueryClient();
   const accounts = useQuery({ queryKey: ['accounts'], queryFn: () => api<Account[]>('/accounts') });
   const folders = useQuery({ queryKey: ['folders'], queryFn: () => api<Folder[]>('/folders') });
@@ -73,10 +86,16 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     void api<UpdateState>('/updates/open', json('POST', {})).then(state => query.setQueryData(['update-status'], state)).catch(() => {});
   }, [locked, query]);
   const [filter, setFilter] = useState<Filter>({ view: 'inbox' });
+  const [quickFilters, setQuickFilters] = useState<MailFilters>({});
   const [expandedAccountId, setExpandedAccountId] = useState<string>();
   const [search, setSearch] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [selected, setSelected] = useState<Message | null>(null);
+  const selectedId = useRef<string | undefined>(undefined);
+  selectedId.current = selected?.id;
+  const [rawMessage, setRawMessage] = useState<Message>();
+  const actionRunning = useRef(false);
+  const [acting, setActing] = useState(false);
   const [accountForm, setAccountForm] = useState<{ id?: string } | null>(null);
   const [accountManager, setAccountManager] = useState(false);
   const [composer, setComposer] = useState<{ draft?: Draft; accountId?: string; fresh?: boolean } | null>(null);
@@ -104,8 +123,15 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
   const fail = useCallback((error: unknown) => setNotice({ text: (error as Error).message, kind: 'error' }), []);
 
   const messages = useInfiniteQuery({
-    queryKey: ['messages', filter, searchTerm], initialPageParam: 0,
-    queryFn: ({ pageParam }) => api<MessagePage>(`/messages?${new URLSearchParams({ ...filter, view: filter.view === 'drafts' ? 'all' : filter.view, q: searchTerm, offset: String(pageParam) })}`),
+    queryKey: ['messages', filter, searchTerm, quickFilters], initialPageParam: 0,
+    queryFn: ({ pageParam }) => {
+      const input = { ...filter, view: filter.view === 'drafts' ? 'all' : filter.view, q: searchTerm, offset: String(pageParam) };
+      if (quickFilters.tags?.length) return api<MessagePage>('/messages/query', json('POST', { ...input, ...quickFilters }));
+      const params = new URLSearchParams(input);
+      if (quickFilters.read) params.set('read', quickFilters.read);
+      if (quickFilters.starred) params.set('starred', quickFilters.starred);
+      return api<MessagePage>(`/messages?${params}`);
+    },
     getNextPageParam: page => page.nextOffset ?? undefined,
     enabled: filter.view !== 'drafts',
   });
@@ -122,6 +148,7 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
   const accountList = useMemo(() => accounts.data ?? [], [accounts.data]);
   const canSend = accountList.some(account => account.sendEnabled);
   const canReceive = accountList.some(account => account.receiveEnabled);
+  const receiving = (message: Message) => accountList.some(account => account.id === message.accountId && account.receiveEnabled);
   const folderRows = useMemo(() => folderList(folders.data ?? []), [folders.data]);
   // A removed mailbox never reports that its sync ended.
   const activeSync = useMemo(() => new Set([...syncing].filter(id => accountList.some(account => account.id === id && account.receiveEnabled))), [syncing, accountList]);
@@ -139,7 +166,7 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     return () => clearTimeout(timer);
   }, [search, searchTerm]);
 
-  const modalOpen = locked || mobileNav || !!accountManager || !!accountForm || globalSettings || versionDialog || !!deletingFolder || !!creatingFolder || !!composer || !!deletingDraftId;
+  const modalOpen = locked || mobileNav || !!accountManager || !!accountForm || globalSettings || versionDialog || !!deletingFolder || !!creatingFolder || !!composer || !!deletingDraftId || !!rawMessage;
   useEffect(() => { setNoticePaused(false); }, [notice]);
   useEffect(() => {
     const el = noticeRef.current;
@@ -168,8 +195,11 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     let events: EventSource;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
+    let notificationTimer: ReturnType<typeof setTimeout> | undefined;
+    let active = true;
     let lastEvent = 0;
     const pending = new Set<string>();
+    const newMail = new Set<string>();
     const refresh = (keys = ['accounts', 'folders', 'messages', 'thread', 'counts', 'drafts']) => {
       keys.forEach(key => pending.add(key));
       if (timer) return;
@@ -179,13 +209,25 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
       lastEvent = Date.now();
       const update = JSON.parse((event as MessageEvent<string>).data) as SyncEvent;
       if (update.type === 'settings') { refresh(['global-proxy', 'oauth-clients', 'update-settings', 'update-status']); return; }
+      if (update.type === 'new-mail') {
+        update.messageIds.forEach(id => newMail.add(id));
+        notificationTimer ??= setTimeout(() => {
+          notificationTimer = undefined;
+          const ids = [...newMail];
+          newMail.clear();
+          void notifyNewMail(ids, () => active).catch(() => {});
+        }, 400);
+        refresh(['messages', 'counts']);
+        return;
+      }
       if (update.messageId) void query.invalidateQueries({ queryKey: ['body', update.messageId] });
       if (update.state) setSyncing(current => {
         const next = new Set(current);
         if (update.state === 'running') next.add(update.accountId); else next.delete(update.accountId);
         return next;
       });
-      refresh(update.type === 'draft' ? ['drafts', 'counts'] : update.contentOnly ? ['messages', 'thread'] : update.type === 'sync' ? ['accounts'] : undefined);
+      refresh(update.type === 'draft' ? ['drafts', 'counts'] : update.contentOnly ? ['messages', 'thread']
+        : update.type === 'sync' ? update.state === 'running' ? ['accounts'] : ['accounts', 'message-tags'] : undefined);
     };
     const connect = () => {
       clearTimeout(retry);
@@ -210,7 +252,8 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     window.addEventListener('online', resume);
     document.addEventListener('visibilitychange', resume);
     return () => {
-      clearTimeout(timer); clearTimeout(retry); events.close();
+      active = false;
+      clearTimeout(timer); clearTimeout(retry); clearTimeout(notificationTimer); events.close();
       window.removeEventListener('online', resume); document.removeEventListener('visibilitychange', resume);
     };
   }, [query, locked]);
@@ -241,11 +284,11 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     }
   }
   function navigate(next: Filter) {
-    setFilter(next); clearReaderState(); setMobileNav(false); setExpandedAccountId(next.accountId);
+    setFilter(next); setQuickFilters({}); clearReaderState(); setMobileNav(false); setExpandedAccountId(next.accountId);
   }
   function toggleAccount(id: string) {
     if (expandedAccountId === id) { setExpandedAccountId(undefined); return; }
-    setExpandedAccountId(id); setFilter({ view: 'inbox', accountId: id }); clearReaderState();
+    setExpandedAccountId(id); setFilter({ view: 'inbox', accountId: id }); setQuickFilters({}); clearReaderState();
   }
   const select = useCallback((message: Message) => {
     setSelected(message);
@@ -261,6 +304,51 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
     // Back in the list, the keyboard continues from the message that was open.
     if (id) requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-message-id="${id}"]`)?.focus({ preventScroll: true }));
   }, [selected?.id]);
+  useEffect(() => {
+    if (locked || !openedNotification) return;
+    consumeNotification();
+    setSearch(''); setSearchTerm(''); setQuickFilters({}); setFilter({ view: 'inbox' }); setExpandedAccountId(undefined);
+    if (!openedNotification.messageId || !/^[0-9a-f-]{36}$/i.test(openedNotification.messageId)) {
+      setSelected(null);
+      if (readerHistoryRef.current) { readerHistoryRef.current = false; history.back(); }
+      return;
+    }
+    void api<Message>(`/messages/${openedNotification.messageId}`).then(message => { if (message) select(message); }).catch(fail);
+  }, [locked, openedNotification, consumeNotification, select, fail]);
+
+  async function runMessageAction(targets: Message[], action: MessageAction, sourceFolderId?: string) {
+    if (actionRunning.current || !targets.length) return [];
+    actionRunning.current = true;
+    setActing(true);
+    const succeeded: string[] = [];
+    const errors: string[] = [];
+    const ids = targets.map(message => message.id);
+    const command = action.type === 'move' ? { ...action, sourceFolderId } : action;
+    try {
+      for (let offset = 0; offset < ids.length; offset += MAX_BATCH_MESSAGES) {
+        const results = await api<MessageActionResult[]>('/message-actions', json('POST', { ids: ids.slice(offset, offset + MAX_BATCH_MESSAGES), action: command }));
+        for (const result of results) {
+          if (result.error) errors.push(result.error);
+          else succeeded.push(result.id);
+        }
+      }
+    } catch (error) {
+      errors.push((error as Error).message);
+    } finally {
+      if (action.type === 'flags' && selectedId.current && succeeded.includes(selectedId.current)) {
+        setSelected(current => current && succeeded.includes(current.id) ? { ...current, ...action.patch } : current);
+      } else if (action.type === 'move' && selectedId.current && succeeded.includes(selectedId.current)) {
+        clearReaderState();
+      }
+      await Promise.all(['messages', 'thread', 'counts'].map(key => query.invalidateQueries({ queryKey: [key] })));
+      actionRunning.current = false;
+      setActing(false);
+    }
+    if (errors.length) {
+      setNotice({ text: targets.length === 1 ? errors[0] : `已处理 ${succeeded.length} 封，未完成 ${ids.length - succeeded.length} 封。 ${errors[0]}`, kind: 'error' });
+    } else if (targets.length > 1) setNotice({ text: `已处理 ${succeeded.length} 封邮件`, kind: 'success' });
+    return succeeded;
+  }
   useEffect(() => {
     const onPopState = () => {
       if (!readerHistoryRef.current) return;
@@ -335,7 +423,9 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
   // An empty list means little while the first sync of what is being viewed has not finished.
   const stillSyncing = (account ? [account] : accountList).some(item => item.receiveEnabled && (activeSync.has(item.id) || (item.lastSync === null && !item.error)));
   const failing = accountList.filter(item => item.error);
-  const empty = searchTerm ? <><Search size={30} strokeWidth={1.3} aria-hidden /><h3>没有找到相关邮件</h3><p>换个关键词试试。后台会逐步补全正文索引。</p></>
+  const empty = quickFilters.read || quickFilters.starred || quickFilters.tags?.length ? <><Search size={30} strokeWidth={1.3} aria-hidden /><h3>没有符合筛选条件的邮件</h3>
+    <Button onClick={() => setQuickFilters({})}>清除筛选</Button></>
+    : searchTerm ? <><Search size={30} strokeWidth={1.3} aria-hidden /><h3>没有找到相关邮件</h3><p>换个关键词试试。后台会逐步补全正文索引。</p></>
     : !accountList.length ? <><Inbox size={30} strokeWidth={1.3} aria-hidden /><h3>先连接一个邮箱</h3><p>连接后，邮件会同步到运行信屿的主机。</p><Button variant="primary" onClick={() => setAccountForm({})}><Plus size={15} aria-hidden />连接邮箱</Button></>
     : account?.receiveEnabled === false ? <><Send size={30} strokeWidth={1.3} aria-hidden /><h3>此邮箱仅用于发信</h3><p>需要收信时，可在邮箱设置中开启。</p></>
     : stillSyncing ? <><RefreshCw size={30} strokeWidth={1.3} className="spin" aria-hidden /><h3>正在同步邮件…</h3><p>第一次同步需要一些时间，来信会陆续出现在这里。</p></>
@@ -390,19 +480,28 @@ function Mailbox({ locked, onLogout }: { locked: boolean; onLogout: () => void }
       <div className="mail-panes">
         {/* While the reader covers the list on a narrow screen, the list is out of reach for keyboard and screen reader too. */}
         <section className="message-pane" inert={covering && reading}>
+          {!isDrafts && <QuickFilters filters={quickFilters} onChange={setQuickFilters} starView={filter.view === 'starred'}
+            accounts={accountList} accountId={filter.accountId} />}
           {isDrafts ? drafts.isPending ? <p className="loading">正在读取草稿…</p> : drafts.error ? <p className="error">{drafts.error.message}</p>
             : <DraftList drafts={drafts.data ?? []} accounts={accountList} onOpen={id => { void openDraft(id); }} onDelete={id => setDeletingDraftId(id)} />
-            : <MessageList key={JSON.stringify([filter, searchTerm])} messages={messages} rows={rows} selectedId={selected?.id} onSelect={select} accountMark={accountMark} empty={empty} />}
+            : <MessageList key={JSON.stringify([filter, searchTerm, quickFilters])} messages={messages} rows={rows} selectedId={selected?.id}
+                sourceFolderId={filter.folderId} folders={folders.data ?? []} receiving={receiving} canReply={!replying} busy={acting}
+                onSelect={select} onStar={message => { void flag(message, { starred: !message.starred }); }} onRaw={setRawMessage}
+                onReply={(message, mode, includeAttachments = true) => reply({ messageId: message.id, mode, includeAttachments })}
+                onAction={(targets, action) => runMessageAction(targets, action, filter.folderId)} accountMark={accountMark} empty={empty} />}
         </section>
         {isDrafts ? <section className="reader-empty"><FileText size={40} strokeWidth={1.1} aria-hidden /><p>选择一封草稿继续编辑</p><small>草稿保存在信屿服务端，可在其他设备继续编辑，不会同步到邮箱服务商。</small></section> : selectedMessage
           ? <Reader key={selectedMessage.id} message={selectedMessage} folders={folders.data ?? []} composing={replying} covering={covering} backLabel={title}
-              receiving={accountList.find(account => account.id === selectedMessage.accountId)?.receiveEnabled ?? true}
+              receiving={receiving(selectedMessage)} movePending={acting}
+              sourceFolderId={filter.folderId && selectedMessage.folderIds?.includes(filter.folderId) ? filter.folderId : undefined}
               accountName={accountList.length > 1 ? accountList.find(item => item.id === selectedMessage.accountId)?.name : undefined}
               onReply={(mode, includeAttachments = true) => reply({ messageId: selectedMessage.id, mode, includeAttachments })}
-              onBack={closeReader} onSelect={select} onFlag={patch => { void flag(selectedMessage, patch); }} onMoved={closeReader} />
+              onBack={closeReader} onSelect={select} onFlag={patch => { void flag(selectedMessage, patch); }} onRaw={() => setRawMessage(selectedMessage)}
+              onMove={action => { void runMessageAction([selectedMessage], action, filter.folderId && selectedMessage.folderIds?.includes(filter.folderId) ? filter.folderId : undefined); }} />
           : <ReaderEmpty />}
       </div>
     </main>
+    {rawMessage && <RawMessageModal messageId={rawMessage.id} subject={rawMessage.subject} onClose={() => setRawMessage(undefined)} />}
     {deletingDraftId && <ConfirmModal title="删除这封草稿？" description="这封本地草稿和不再使用的附件将被永久删除。"
       confirmLabel={deletingDraftBusy ? '正在删除…' : '删除'} cancelLabel="取消" variant="danger" pending={deletingDraftBusy}
       onClose={() => setDeletingDraftId(null)} onConfirm={() => { void confirmDeleteDraft(); }} />}

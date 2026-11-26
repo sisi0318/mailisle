@@ -36,6 +36,32 @@ describe('HTTP authentication and local data', () => {
     await request('/logout', 'POST', {}, cookie);
     expect((await request('/accounts', 'GET', undefined, cookie)).status).toBe(401);
   });
+  it('authenticates direct message links and validates batch actions before dispatch', async () => {
+    const { inbox } = seedAccount(store);
+    const [{ id }] = store.applyBatch(inbox, [record()]);
+    expect((await request('/messages/' + id)).status).toBe(401);
+    expect((await request('/message-actions', 'POST', {})).status).toBe(401);
+    const cookie = await login();
+    const mail = await request('/messages/' + id, 'GET', undefined, cookie);
+    expect(mail.status).toBe(200);
+    expect(await mail.json()).toMatchObject({ id, folderIds: [inbox.id] });
+    expect((await request('/messages/missing', 'GET', undefined, cookie)).status).toBe(404);
+    expect((await request('/message-actions', 'POST', { ids: [id], action: { type: 'move', target: { role: 'sent' } } }, cookie)).status).toBe(400);
+  });
+  it('loads account tags and queries a large selection without an oversized URL', async () => {
+    const { accountId, inbox } = seedAccount(store);
+    store.applyBatch(inbox, [record(1, { flags: ['First'] }), record(2, { flags: ['Second'] }), record(3)]);
+    expect((await request('/message-tags')).status).toBe(401);
+    const cookie = await login();
+    const tags = await request('/message-tags?accountId=' + accountId, 'GET', undefined, cookie);
+    expect(await tags.json()).toEqual([
+      { accountId, keyword: 'first', label: 'First' },
+      { accountId, keyword: 'second', label: 'Second' },
+    ]);
+    const selected = [accountId + ':first', accountId + ':second', ...Array.from({ length: 98 }, (_, index) => accountId + ':' + ('unused-' + index).padEnd(255, 'x'))];
+    const mail = await request('/messages/query', 'POST', { tags: selected }, cookie);
+    expect(await mail.json()).toMatchObject({ total: 2 });
+  });
   it('keeps global proxy credentials encrypted and exposes only a redacted address', async () => {
     expect((await request('/settings/proxy', 'PUT', { proxy: 'http://127.0.0.1:7890' })).status).toBe(401);
     const cookie = await login();

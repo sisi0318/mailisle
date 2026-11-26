@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import type { MailStore } from '@mail/db';
-import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, type AccountSettings, type AccountUpdate, type AccountVerification, type ComposeMode, type Draft, type DraftInput, type FlagUpdate, type MessageBody, type SendInput, type SyncEvent } from '@mail/shared';
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, type AccountSettings, type AccountUpdate, type AccountVerification, type ComposeMode, type Draft, type DraftInput, type FlagUpdate, type MessageAction, type MessageActionResult, type MessageBody, type SendInput, type SyncEvent } from '@mail/shared';
 import type { MailAdapter } from './adapter';
 import { ImapAdapter } from './imap';
 import { Vault } from './crypto';
@@ -222,19 +222,44 @@ export class MailService {
       } finally { this.emit({ type: 'change', accountId: message.accountId }); }
     }, 'receive', 'flags');
   }
-  async move(id: string, folderId: string) {
+  async move(id: string, folderId: string, sourceFolderId?: string) {
     const message = this.requireMessage(id);
     const target = this.store.folder(folderId);
-    if (!target || target.accountId !== message.accountId) throw new Error('目标文件夹必须属于同一账号');
-    const location = this.store.messageLocations(id).find(item => item.folder.id !== folderId);
-    if (!location) throw new Error('邮件已在目标文件夹中');
-    await this.withAdapter(message.accountId, async (adapter, checkCurrent) => {
+    if (!target || target.accountId !== message.accountId) throw new UserError('目标文件夹必须属于同一邮箱');
+    return this.withAdapter(message.accountId, async (adapter, checkCurrent) => {
+      const locations = this.store.messageLocations(id);
+      const candidates = locations.filter(item => item.folder.id !== folderId);
+      const preferredSource = target.role === 'inbox' ? 'junk' : 'inbox';
+      const location = sourceFolderId ? locations.find(item => item.folder.id === sourceFolderId)
+        : candidates.find(item => item.folder.role === preferredSource) ?? candidates[0];
+      if (location?.folder.id === folderId || (!location && locations.some(item => item.folder.id === folderId))) return;
+      if (!location) throw new UserError('邮件已不在原文件夹中，请刷新后重试', 409);
       const receipt = await adapter.move(location.folder, location.uid, target.path);
       checkCurrent();
       const mapped = this.store.moveLocation(location.folder.id, location.uid, target, receipt);
       this.emit({ type: 'change', accountId: message.accountId });
       if (!mapped) void this.sync(message.accountId);
     }, 'receive', 'move');
+  }
+  async actOnMessages(ids: string[], action: MessageAction): Promise<MessageActionResult[]> {
+    const results: MessageActionResult[] = [];
+    // The adapter shares one IMAP connection per account. Run in order so a large selection leaves
+    // room for other mailbox operations and a failure does not roll back completed messages.
+    for (const id of new Set(ids)) {
+      try {
+        if (action.type === 'flags') await this.flags(id, action.patch);
+        else {
+          const { target } = action;
+          const folderId = 'folderId' in target ? target.folderId
+            : this.store.folders(this.requireMessage(id).accountId).filter(folder => folder.role === target.role)
+              .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))[0]?.id;
+          if (!folderId) throw new UserError('这个邮箱没有对应的文件夹');
+          await this.move(id, folderId, action.sourceFolderId);
+        }
+        results.push({ id });
+      } catch (error) { results.push({ id, error: publicError(error) }); }
+    }
+    return results;
   }
   async markAllRead(accountId: string, folderId?: string) {
     const folder = folderId ? this.store.folder(folderId) : undefined;
@@ -411,6 +436,8 @@ export class MailService {
         const listedFolders = await adapter.listFolders();
         checkCurrent();
         const folders = this.store.saveFolders(id, listedFolders);
+        // Some providers expose the same message under several labels. Process the inbox first.
+        folders.sort((a, b) => Number(b.role === 'inbox') - Number(a.role === 'inbox'));
         folderCount = folders.length;
         for (const listed of folders) {
           if (!this.currentEpoch(id, epoch) || this.changingAccounts.has(id)) return;
@@ -422,7 +449,14 @@ export class MailService {
             const { cursor, uids } = await adapter.sync(folder, {
               knownUids: this.store.folderUids(folder.id),
               begin: validity => { checkCurrent(); this.store.beginFolder(folder.id, validity); },
-              messages: records => { checkCurrent(); this.store.applyBatch(this.store.folder(folder.id)!, records); },
+              messages: records => {
+                checkCurrent();
+                const current = this.store.folder(folder.id)!;
+                const newUnread = this.store.applyBatch(current, records);
+                if (folder.role !== 'inbox' || !current.syncComplete || current.uidValidity !== folder.uidValidity) return;
+                const messageIds = newUnread.filter(message => message.uid >= folder.uidNext).map(message => message.id);
+                if (messageIds.length) this.emit({ type: 'new-mail', accountId: id, messageIds });
+              },
               flags: records => { checkCurrent(); this.store.applyFlags(folder.id, records); },
             });
             checkCurrent();

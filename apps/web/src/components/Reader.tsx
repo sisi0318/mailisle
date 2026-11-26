@@ -1,11 +1,12 @@
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Archive, Download, FolderInput, Forward, Image, ImageOff, Mail, MailOpen, Reply, ReplyAll, Star, Trash2 } from 'lucide-react';
-import { RAW_PREVIEW_BYTES, type Address, type ComposeMode, type Folder, type FolderRole, type Message, type MessageBody, type RawMessage } from '@mail/shared';
-import { api, json } from '../api';
+import { useQuery } from '@tanstack/react-query';
+import { ArrowLeft, Archive, Download, FileCode, FolderInput, Forward, Image, ImageOff, Mail, MailOpen, Reply, ReplyAll, ShieldAlert, ShieldCheck, Star, Trash2 } from 'lucide-react';
+import { RAW_PREVIEW_BYTES, type Address, type ComposeMode, type Folder, type FolderRole, type Message, type MessageAction, type MessageBody, type RawMessage } from '@mail/shared';
+import { api } from '../api';
 import { fileSize, folderList, fullDate, listDate, senderName } from '../format';
 import { mailDocument } from '../mail-html';
 import { Button, CopyButton, FileName, Modal, Toolbar } from './ui';
+import { isJunk } from './MessageMenu';
 
 type Props = {
   message: Message;
@@ -21,29 +22,34 @@ type Props = {
   onBack: () => void;
   onSelect: (message: Message) => void;
   onFlag: (patch: { seen?: boolean; starred?: boolean }) => void;
-  onMoved: () => void;
+  onMove: (action: MessageAction) => void;
+  onRaw: () => void;
+  sourceFolderId?: string;
+  movePending: boolean;
 };
 
 const people = (list: Address[]) => list.map(item => item.name ? `${item.name} <${item.address}>` : item.address).join('、');
 
-export function Reader({ message, folders, accountName, covering, backLabel, onReply, composing, receiving, onBack, onSelect, onFlag, onMoved }: Props) {
-  const query = useQueryClient();
+export function Reader({ message, folders, accountName, covering, backLabel, onReply, composing, receiving, onBack, onSelect, onFlag, onMove, onRaw, sourceFolderId, movePending }: Props) {
   const back = useRef<HTMLButtonElement>(null);
   const [expanded, setExpanded] = useState(false);
   // Asked for per message: this component is created anew for each one, so the choice does not carry over.
   const [showImages, setShowImages] = useState(false);
-  const [showingRaw, setShowingRaw] = useState(false);
   const body = useQuery({ queryKey: ['body', message.id], queryFn: () => api<MessageBody>(`/messages/${message.id}/body`), retry: false });
   const thread = useQuery({ queryKey: ['thread', message.id], queryFn: () => api<Message[]>(`/messages/${message.id}/thread`) });
-  const move = useMutation({ mutationFn: (folderId: string) => api(`/messages/${message.id}/move`, json('POST', { folderId })),
-    onSuccess: () => { onMoved(); for (const key of ['messages', 'counts', 'thread']) void query.invalidateQueries({ queryKey: [key] }); } });
   const rendered = useMemo(() => body.data?.html ? mailDocument(body.data.html, body.data.inlineImages, { remoteImages: showImages }) : null, [body.data?.html, body.data?.inlineImages, showImages]);
   // The list underneath cannot be reached while the reader covers it, so keyboard focus moves along.
   useEffect(() => { if (covering) back.current?.focus(); }, [covering]);
-  const targets = receiving ? folderList(folders.filter(folder => folder.accountId === message.accountId)) : [];
+  const accountFolders = receiving ? folders.filter(folder => folder.accountId === message.accountId) : [];
+  const junk = isJunk(message, accountFolders, sourceFolderId);
+  const targets = folderList(accountFolders.filter(folder => sourceFolderId
+    ? folder.id !== sourceFolderId : (junk && folder.role === 'inbox') || !message.folderIds?.includes(folder.id)));
   const byRole = (role: FolderRole) => targets.find(({ folder }) => folder.role === role)?.folder;
   const archive = byRole('archive');
   const trash = byRole('trash');
+  const junkTarget = byRole(junk ? 'inbox' : 'junk');
+  const junkLabel = junk ? '移回收件箱' : '标为垃圾邮件';
+  const move = (folderId: string) => onMove({ type: 'move', target: { folderId } });
   const sender = message.from[0];
   const copied = (body.data?.cc ?? []).filter(item => item.address);
   // Replies would go somewhere other than the visible sender; worth showing, since that is a common phishing trick.
@@ -59,11 +65,15 @@ export function Reader({ message, folders, accountName, covering, backLabel, onR
       <Button variant="ghost" disabled={composing} aria-label="转发，带上附件" title="转发并携带附件（含内嵌图片文件）" onClick={() => onReply('forward')}><Forward size={17} aria-hidden /></Button>
       <Button variant="ghost" disabled={composing} className="forward-text" onClick={() => onReply('forward', false)}>仅转发正文</Button>
       <span className="toolbar-separator" role="separator" aria-orientation="vertical" />
-      <Button variant="ghost" disabled={!receiving} aria-label={message.seen ? '标为未读' : '标为已读'} title={!receiving ? '此邮箱已关闭收信' : message.seen ? '标为未读' : '标为已读'} onClick={() => onFlag({ seen: !message.seen })}>{message.seen ? <Mail size={17} aria-hidden /> : <MailOpen size={17} aria-hidden />}</Button>
-      <Button variant="ghost" disabled={!receiving} aria-label="星标" title={!receiving ? '此邮箱已关闭收信' : message.starred ? '取消星标' : '加星标'} aria-pressed={message.starred} className={message.starred ? 'starred' : ''} onClick={() => onFlag({ starred: !message.starred })}><Star size={17} aria-hidden fill={message.starred ? 'currentColor' : 'none'} /></Button>
-      <Button variant="ghost" aria-label="归档" title={archive ? '归档' : '这个邮箱没有归档文件夹'} disabled={move.isPending || !archive} onClick={() => move.mutate(archive!.id)}><Archive size={17} aria-hidden /></Button>
-      <Button variant="ghost" aria-label="移到已删除" title={trash ? '移到已删除' : '这个邮箱没有已删除文件夹'} disabled={move.isPending || !trash} onClick={() => move.mutate(trash!.id)}><Trash2 size={17} aria-hidden /></Button>
-      <MoveMenu targets={targets} pending={move.isPending} onMove={folderId => move.mutate(folderId)} />
+      <Button variant="ghost" disabled={!receiving || movePending} aria-label={message.seen ? '标为未读' : '标为已读'} title={!receiving ? '此邮箱已关闭收信' : message.seen ? '标为未读' : '标为已读'} onClick={() => onFlag({ seen: !message.seen })}>{message.seen ? <Mail size={17} aria-hidden /> : <MailOpen size={17} aria-hidden />}</Button>
+      <Button variant="ghost" disabled={!receiving || movePending} aria-label="星标" title={!receiving ? '此邮箱已关闭收信' : message.starred ? '取消星标' : '加星标'} aria-pressed={message.starred} className="star-toggle" onClick={() => onFlag({ starred: !message.starred })}><Star size={17} aria-hidden fill={message.starred ? 'currentColor' : 'none'} /></Button>
+      <Button variant="ghost" aria-label="归档" title={archive ? '归档' : '没有可用的归档文件夹'} disabled={movePending || !archive} onClick={() => move(archive!.id)}><Archive size={17} aria-hidden /></Button>
+      <Button variant="ghost" aria-label={junkLabel} title={junkTarget ? junkLabel : '没有可用的目标文件夹'} disabled={movePending || !junkTarget} onClick={() => move(junkTarget!.id)}>
+        {junk ? <ShieldCheck size={17} aria-hidden /> : <ShieldAlert size={17} aria-hidden />}
+      </Button>
+      <Button variant="ghost" aria-label="移到已删除" title={trash ? '移到已删除' : '没有可用的已删除文件夹'} disabled={movePending || !trash} onClick={() => move(trash!.id)}><Trash2 size={17} aria-hidden /></Button>
+      <Button variant="ghost" aria-label="查看原始邮件" title="查看原始邮件" onClick={onRaw}><FileCode size={17} aria-hidden /></Button>
+      <MoveMenu targets={targets} pending={movePending} onMove={move} />
     </Toolbar>
 
     <header className="reader-head">
@@ -77,11 +87,9 @@ export function Reader({ message, folders, accountName, covering, backLabel, onR
           {copied.length > 0 && <p>抄送 {expanded ? people(copied) : copied.map(item => item.name || item.address).join('、')}</p>}
           {replyTo.length > 0 && <p>回复将发往 {people(replyTo)}</p>}
           <p className="sender-meta"><time dateTime={message.date ? new Date(message.date).toISOString() : undefined}>{fullDate(message.date)}</time>{accountName && <span className="account-badge">{accountName}</span>}
-            <button type="button" className="link-button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? '收起' : '完整地址'}</button>
-            <button type="button" className="link-button" onClick={() => setShowingRaw(true)}>原始邮件</button></p>
+            <button type="button" className="link-button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? '收起' : '完整地址'}</button></p>
         </div>
       </div>
-      {move.error && <p role="alert" className="error">{move.error.message}</p>}
       {(thread.data?.length ?? 0) > 1 && <details className="thread">
         <summary>同一会话 · {thread.data!.length} 封</summary>
         {thread.data!.map(item => <button key={item.id} className={item.id === message.id ? 'active' : ''} onClick={() => onSelect(item)}>
@@ -106,11 +114,10 @@ export function Reader({ message, folders, accountName, covering, backLabel, onR
         : rendered ? <iframe title="邮件正文" className="mail-frame" sandbox="allow-popups allow-popups-to-escape-sandbox" srcDoc={rendered.document} />
         : <pre className="plain-body">{body.data.text || '（邮件没有正文）'}</pre>}
     </div>
-    {showingRaw && <RawMessageModal messageId={message.id} subject={message.subject} onClose={() => setShowingRaw(false)} />}
   </section>;
 }
 
-function RawMessageModal({ messageId, subject, onClose }: { messageId: string; subject: string; onClose: () => void }) {
+export function RawMessageModal({ messageId, subject, onClose }: { messageId: string; subject: string; onClose: () => void }) {
   const codeId = useId();
   const raw = useQuery({ queryKey: ['raw', messageId], queryFn: () => api<RawMessage>(`/messages/${messageId}/raw`), retry: false });
 

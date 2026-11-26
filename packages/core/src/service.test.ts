@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile, readdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import MailComposer from 'nodemailer/lib/mail-composer/index.js';
-import type { Folder, MoveReceipt } from '@mail/shared';
+import type { Folder, MoveReceipt, NewMailEvent, SyncEvent } from '@mail/shared';
 import { accountConfig, database, record } from '../../../tests/fixtures';
 import { BodyCache } from './cache';
 import { Vault } from './crypto';
@@ -40,6 +41,49 @@ beforeEach(async () => {
   service = new MailService(store, vault, new BodyCache(directory), factory, new UploadStore(store, join(directory, 'uploads')), undefined, { cleanupMs: 40, verifyMs: 40 });
 });
 afterEach(async () => { await service.stop(); store.close(); await rm(directory, { recursive: true, force: true }); });
+
+it('continues a batch after a missing message and moves only the selected folder location', async () => {
+  const junk = store.saveFolders(accountId, [inbox, sent, { path: 'Junk', name: 'Junk', role: 'junk' }]).find(folder => folder.role === 'junk')!;
+  store.applyBatch(inbox, [record(2, { remoteId: 'labelled' })]);
+  store.applyBatch(sent, [record(4, { remoteId: 'labelled' })]);
+  const labelled = (store.sqlite.prepare("SELECT id FROM messages WHERE remote_key = 'provider:labelled'").get() as { id: string }).id;
+  const missing = randomUUID();
+  const result = await service.actOnMessages([missing, labelled, labelled], { type: 'move', target: { role: 'junk' }, sourceFolderId: inbox.id });
+  expect(result).toEqual([{ id: missing, error: '邮件不存在' }, { id: labelled }]);
+  expect(adapter.move).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: inbox.id }), 2, 'Junk');
+  expect(store.message(labelled)?.folderIds).toEqual(expect.arrayContaining([sent.id, junk.id]));
+  expect(store.message(labelled)?.folderIds).not.toContain(inbox.id);
+  const restore = await service.actOnMessages([labelled], { type: 'move', target: { role: 'inbox' }, sourceFolderId: junk.id });
+  expect(restore).toEqual([{ id: labelled }]);
+  expect(store.message(labelled)?.folderIds).toEqual(expect.arrayContaining([sent.id, inbox.id]));
+});
+
+it('emits new-mail only for fresh, unread inbox inserts after a completed UID baseline', async () => {
+  const events: NewMailEvent[] = [];
+  service.events.on('update', (event: SyncEvent) => { if (event.type === 'new-mail') events.push(event); });
+  let validity = '1';
+  let records = [record(1), record(3)];
+  let uidNext = 4;
+  adapter.sync.mockImplementation(async (folder, sink) => {
+    sink.begin(validity);
+    sink.messages(records);
+    return { cursor: { uidValidity: validity, uidNext, modseq: null }, uids: [1, 2, 3, 4, 5, 6] };
+  });
+  await service.sync(accountId);
+  expect(events).toEqual([]);
+  records = [record(2), record(3), record(4), record(5, { flags: ['\\Seen'] })];
+  uidNext = 6;
+  await service.sync(accountId);
+  const delivered = events.flatMap(event => event.messageIds);
+  expect(delivered).toHaveLength(1);
+  expect(store.messageLocations(delivered[0]).map(location => location.uid)).toEqual([4]);
+  await service.sync(accountId);
+  validity = '2';
+  records = [record(6)];
+  uidNext = 7;
+  await service.sync(accountId);
+  expect(events).toHaveLength(1);
+});
 
 it('reuses the account adapter and commits flags after acknowledgement without starting a sync', async () => {
   const acknowledged = deferred();

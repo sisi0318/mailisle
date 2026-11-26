@@ -4,11 +4,16 @@ import { and, eq, getTableColumns, inArray, lt, sql } from 'drizzle-orm';
 import { mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Account, Cursor, DraftInput, DraftSummary, FlagUpdate, Folder, FolderRole, ListInput, MailFlags, MailMetadata, Message, MessagePage, MoveReceipt, UnreadCounts, Upload } from '@mail/shared';
+import type { Account, Cursor, DraftInput, DraftSummary, FlagUpdate, Folder, FolderRole, ListInput, MailFlags, MailMetadata, Message, MessagePage, MessageTag, MoveReceipt, UnreadCounts, Upload } from '@mail/shared';
 import * as schema from './schema';
 import { previewText, SEARCH_INDEX_VERSION, searchExpression, tokenize } from './search';
 
 const { bodyText: _bodyText, ...messageColumns } = getTableColumns(schema.messages);
+// IMAP stores tags alongside status flags. Keep protocol and client housekeeping flags out of the picker.
+const messageTagPredicate = sql`tag.type = 'text' AND length(tag.value) BETWEEN 1 AND 255
+  AND substr(tag.value, 1, 1) <> char(92)
+  AND lower(tag.value) NOT IN ('$forwarded', '$mdnsent', '$junk', '$notjunk', '$phishing', '$important',
+    '$submitted', '$filtered', '$autojunk', '$autonotjunk', '$hasattachment')`;
 
 export class MailStore {
   readonly sqlite: Database.Database;
@@ -179,11 +184,12 @@ export class MailStore {
       // fetched again and keeps its row, body cache and search entry; until then list() and the counts skip it.
       this.sqlite.prepare(`DELETE FROM messages WHERE account_id = ? AND remote_key NOT LIKE 'provider:%'
         AND NOT EXISTS (SELECT 1 FROM locations WHERE locations.message_id = messages.id)`).run(folder.accountId);
-      this.db.update(schema.folders).set({ uidValidity, uidNext: 1, modseq: null }).where(eq(schema.folders.id, folderId)).run();
+      this.db.update(schema.folders).set({ uidValidity, uidNext: 1, modseq: null, syncComplete: false }).where(eq(schema.folders.id, folderId)).run();
     })();
   }
   applyBatch(folder: Folder, records: MailMetadata[]) {
-    this.sqlite.transaction(() => {
+    return this.sqlite.transaction(() => {
+      const newUnread: { id: string; uid: number }[] = [];
       for (const record of records) {
         const remoteKey = record.remoteId ? `provider:${record.remoteId}` : `${folder.id}:${folder.uidValidity}:${record.uid}`;
         const existing = this.db.select().from(schema.messages).where(and(eq(schema.messages.accountId, folder.accountId), eq(schema.messages.remoteKey, remoteKey))).get();
@@ -196,7 +202,9 @@ export class MailStore {
         this.db.insert(schema.locations).values({ folderId: folder.id, uid: record.uid, messageId: id, flags })
           .onConflictDoUpdate({ target: [schema.locations.folderId, schema.locations.uid], set: { messageId: id, flags } }).run();
         this.indexMessage(id);
+        if (!existing && !flags.includes('\\Seen')) newUnread.push({ id, uid: record.uid });
       }
+      return newUnread;
     })();
   }
   applyFlags(folderId: string, records: MailFlags[]) {
@@ -256,9 +264,21 @@ export class MailStore {
       for (const item of local) if (!present.has(item.uid)) {
         this.db.delete(schema.locations).where(and(eq(schema.locations.folderId, folderId), eq(schema.locations.uid, item.uid))).run();
       }
-      this.db.update(schema.folders).set(cursor).where(eq(schema.folders.id, folderId)).run();
+      this.db.update(schema.folders).set({ ...cursor, syncComplete: true }).where(eq(schema.folders.id, folderId)).run();
       this.removeOrphans();
     })();
+  }
+  messageTags(accountId?: string): MessageTag[] {
+    return this.db.all<MessageTag>(sql`
+      SELECT combinations.account_id AS accountId, lower(tag.value) AS keyword, min(tag.value) AS label
+      FROM (
+        SELECT DISTINCT f.account_id, l.flags FROM locations l JOIN folders f ON f.id = l.folder_id
+        ${accountId ? sql`WHERE f.account_id = ${accountId}` : sql.empty()}
+      ) AS combinations, json_each(combinations.flags) tag
+      WHERE ${messageTagPredicate}
+      GROUP BY combinations.account_id, lower(tag.value)
+      ORDER BY lower(tag.value)
+    `);
   }
   list(input: ListInput): MessagePage {
     const conditions = [];
@@ -271,7 +291,15 @@ export class MailStore {
       // Mail whose folder is being read again after a UIDVALIDITY change is in no folder for a moment.
       conditions.push(sql`EXISTS (SELECT 1 FROM locations l WHERE l.message_id = messages.id)`);
     }
-    if (input.view === 'starred') conditions.push(sql`EXISTS (SELECT 1 FROM locations l, json_each(l.flags) flag WHERE l.message_id = messages.id AND flag.value = ${'\\Flagged'})`);
+    const hasFlag = (flag: string) => sql`EXISTS (SELECT 1 FROM locations l, json_each(l.flags) f WHERE l.message_id = messages.id AND f.value = ${flag})`;
+    if (input.view === 'starred' || input.starred) conditions.push(hasFlag('\\Flagged'));
+    if (input.read) conditions.push(input.read === 'read' ? hasFlag('\\Seen') : sql`NOT ${hasFlag('\\Seen')}`);
+    if (input.tags?.length) {
+      const tags = sql.join(input.tags.map(tag => sql`${tag.toLowerCase()}`), sql`, `);
+      conditions.push(sql`EXISTS (SELECT 1 FROM locations l, json_each(l.flags) tag
+        WHERE l.message_id = messages.id AND ${messageTagPredicate}
+          AND (messages.account_id || ':' || lower(tag.value)) IN (${tags}))`);
+    }
     if (input.q) {
       const expression = searchExpression(input.q);
       conditions.push(expression
@@ -343,10 +371,12 @@ export class MailStore {
     return threadId;
   }
   private toMessage(row: Omit<typeof schema.messages.$inferSelect, 'bodyText'>): Message {
-    const flags = this.messageLocations(row.id).flatMap(location => location.flags);
+    const locations = this.messageLocations(row.id);
+    const flags = locations.flatMap(location => location.flags);
     return { id: row.id, accountId: row.accountId, messageId: row.messageId, references: row.references,
       threadId: row.threadId, subject: row.subject, from: row.from, to: row.to, replyTo: row.replyTo, date: row.date,
-      preview: previewText(row.preview), cached: row.cached, seen: flags.includes('\\Seen'), starred: flags.includes('\\Flagged') };
+      preview: previewText(row.preview), cached: row.cached, seen: flags.includes('\\Seen'), starred: flags.includes('\\Flagged'),
+      folderIds: locations.map(location => location.folder.id) };
   }
   private removeOrphans() {
     this.sqlite.exec('DELETE FROM messages WHERE NOT EXISTS (SELECT 1 FROM locations WHERE locations.message_id = messages.id)');
