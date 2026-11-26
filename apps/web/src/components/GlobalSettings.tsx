@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, ChevronRight, Info, KeyRound, Network, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Bell, ChevronRight, Info, KeyRound, Network, RefreshCw } from 'lucide-react';
 import type { GlobalProxySettings, OAuthClientSettings, OAuthProvider, UpdateSettings } from '@mail/shared';
 import { api, json } from '../api';
 import { Button, Modal } from './ui';
 import { About, type AboutPage } from './About';
+import { browserNotificationsEnabled, notificationPermission, setBrowserNotifications } from '../notifications';
 
-type Page = 'home' | 'proxy' | 'apps' | 'microsoft' | 'google' | 'updates' | AboutPage;
-const titles: Record<Page, string> = { home: '设置', proxy: '网络代理', apps: '自定义授权应用', microsoft: 'Microsoft', google: 'Google', updates: '更新设置', about: '关于', license: '开源许可', components: '上游开源组件', disclaimer: '免责声明' };
+type Page = 'home' | 'proxy' | 'apps' | 'microsoft' | 'google' | 'updates' | 'notifications' | AboutPage;
+const titles: Record<Page, string> = { home: '设置', proxy: '网络代理', apps: '自定义授权应用', microsoft: 'Microsoft', google: 'Google', updates: '更新设置', notifications: '浏览器通知', about: '关于', license: '开源许可', components: '上游开源组件', disclaimer: '免责声明' };
 export function GlobalSettings({ onClose, onUpdates }: { onClose: () => void; onUpdates: () => void }) {
   const query = useQueryClient();
   const [page, setPage] = useState<Page>('home');
@@ -47,10 +48,12 @@ export function GlobalSettings({ onClose, onUpdates }: { onClose: () => void; on
     {page === 'home' && <div className="settings-menu">
       <button onClick={() => navigate('proxy')}><Network size={21} /><span><strong>网络代理</strong><small>{proxy.data?.configured ? '已设置全局代理' : '未设置'}</small></span><ChevronRight size={17} /></button>
       <button onClick={() => navigate('apps')}><KeyRound size={21} /><span><strong>自定义授权应用</strong><small>Microsoft、Google 授权设置</small></span><ChevronRight size={17} /></button>
+      <button onClick={() => navigate('notifications')}><Bell size={21} /><span><strong>浏览器通知</strong><small>新邮件的系统提醒</small></span><ChevronRight size={17} /></button>
       <button onClick={() => navigate('updates')}><RefreshCw size={21} /><span><strong>更新设置</strong><small>检查频率、渠道与代理</small></span><ChevronRight size={17} /></button>
       <button onClick={() => navigate('about')}><Info size={21} /><span><strong>关于</strong><small>项目、开源许可与使用说明</small></span><ChevronRight size={17} /></button>
     </div>}
     {(page === 'about' || aboutChild) && <About page={page as AboutPage} onNavigate={navigate} onUpdates={onUpdates} />}
+    {page === 'notifications' && <NotificationSettings />}
     {page === 'apps' && <><p className="settings-intro">设置默认授权应用，单个邮箱也可独立配置。</p><div className="settings-menu">
       {(['microsoft', 'google'] as const).map(provider => <button key={provider} onClick={() => navigate(provider)}>
         <span className="settings-provider-mark" aria-hidden>{provider === 'microsoft' ? 'MS' : 'G'}</span><span><strong>{titles[provider]}</strong><small>{clients.data?.[provider].custom ? '已配置自定义应用' : '使用预置授权应用'}</small></span><ChevronRight size={17} />
@@ -95,4 +98,32 @@ export function GlobalSettings({ onClose, onUpdates }: { onClose: () => void; on
     </form>}</div>
     {saved?.page === page && <p className="settings-saved" role="status">{saved.text}</p>}
   </Modal>;
+}
+
+function NotificationSettings() {
+  const [enabled, setEnabled] = useState(browserNotificationsEnabled);
+  const [permission, setPermission] = useState(notificationPermission);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    const refresh = () => { setEnabled(browserNotificationsEnabled()); setPermission(notificationPermission()); };
+    window.addEventListener('focus', refresh);
+    window.addEventListener('storage', refresh);
+    return () => { window.removeEventListener('focus', refresh); window.removeEventListener('storage', refresh); };
+  }, []);
+  async function toggle() {
+    setPending(true);
+    setError('');
+    try { setEnabled(await setBrowserNotifications(!enabled)); }
+    catch { setError('无法修改通知，请在浏览器的网站设置中检查权限。'); }
+    finally { setPermission(notificationPermission()); setPending(false); }
+  }
+  return <div className="settings-form">
+    <p className="settings-intro">保持信屿页面打开并登录，即可接收新邮件提醒。系统通知只显示来信数量。</p>
+    {permission === 'unavailable' && <p className="hint">浏览器通知需要受支持的浏览器，并通过 HTTPS 或本机地址打开信屿。</p>}
+    {permission === 'denied' && <p className="hint">此网站的通知已被浏览器阻止。请在浏览器的网站设置中允许通知。</p>}
+    {error && <p className="error" role="alert">{error}</p>}
+    <div className="form-footer"><Button variant={enabled ? 'secondary' : 'primary'} disabled={pending || !enabled && (permission === 'denied' || permission === 'unavailable')}
+      onClick={() => { void toggle(); }}>{enabled ? '关闭浏览器通知' : '启用浏览器通知'}</Button></div>
+  </div>;
 }

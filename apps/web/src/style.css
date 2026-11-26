@@ -72,7 +72,8 @@ legend{font-size:0.8125rem;padding:0 6px;color:var(--text-2)}
 .button-ghost{color:var(--text-2)}
 .button-ghost:hover:not(:disabled){background:var(--hover-strong);color:var(--text)}
 .button-ghost[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent-ink)}
-.button-ghost.starred,.button-ghost.starred[aria-pressed="true"]{color:var(--star)}
+.button-ghost.star-toggle:hover:not(:disabled),.button-ghost.star-toggle[aria-pressed="true"]{background:transparent}
+.button-ghost.star-toggle[aria-pressed="true"]{color:var(--star)}
 .button-danger{color:var(--danger);background:var(--danger-soft)}
 .link-button{display:inline-flex;align-items:center;min-block-size:24px;font-size:0.8125rem;font-weight:400;color:var(--accent-ink)}
 .link-button:hover{text-decoration:underline}
@@ -187,21 +188,55 @@ legend{font-size:0.8125rem;padding:0 6px;color:var(--text-2)}
 /* Message list */
 .mail-panes{display:flex;flex:1;min-height:0}
 .message-pane{width:380px;flex-shrink:0;border-right:1px solid var(--line);display:flex;flex-direction:column}
+.quick-filters,.message-selection{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:3px 10px;border-bottom:1px solid var(--line);flex-shrink:0;background:var(--surface)}
+.quick-filters .button,.message-selection .button{padding:4px 7px;font-size:0.75rem}
+.quick-filter-options:not([hidden]){display:flex;align-items:center;gap:5px;flex-wrap:wrap;width:100%}
+.filter-segments{display:inline-flex;align-items:stretch;padding:1px;border:1px solid var(--line-strong);border-radius:7px;background:var(--panel)}
+.filter-segments .button{border-radius:5px;padding-inline:7px}
+.filter-segments .button[aria-pressed=true]{background:var(--selected);color:var(--accent-ink);font-weight:650}
+.tag-filter-trigger[aria-expanded=true]{background:var(--selected);color:var(--accent-ink)}
+.tag-filter-options:not([hidden]){display:grid;gap:6px;flex-basis:100%;max-height:min(40vh,260px);overflow:auto;padding:4px 0 7px;overscroll-behavior:contain}
+.tag-filter-options fieldset{display:flex;flex-direction:row;align-items:start;flex-wrap:wrap;gap:2px 10px;padding:4px 8px}
+.tag-filter-options .message-checkbox{justify-content:flex-start;gap:5px;max-width:100%;min-height:28px}
+.tag-filter-options label span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tag-filter-options p{font-size:0.75rem;color:var(--text-3);padding:4px}
+.quick-filter-options .link-button{font-size:0.75rem;padding:4px 6px}
+.filter-dot{width:6px;height:6px;border-radius:50%;background:var(--accent-ink)}
+.message-selection{min-height:34px;flex-wrap:nowrap;color:var(--text-2);font-size:0.75rem}
+.message-checkbox{flex-direction:row;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer}
+.message-checkbox input{appearance:auto;min-height:0;width:16px;height:16px;margin:0;padding:0;cursor:pointer}
+.select-loaded{min-height:24px;padding:0 3px}
+.selection-count{white-space:nowrap}
+.selection-actions{display:flex;gap:1px;margin-left:auto}
 .message-scroll{flex:1;overflow:auto;overscroll-behavior:contain}
-.message-row{position:absolute;top:0;left:0;width:100%;display:block;padding:11px 16px 11px 28px;text-align:left;border-bottom:1px solid var(--line-soft);background:var(--surface)}
+.message-row{position:absolute;top:0;left:0;width:100%;display:flex;align-items:center;padding:0 6px;border-bottom:1px solid var(--line-soft);background:var(--surface)}
 .message-row:hover{background:var(--hover)}
-.message-row:focus-visible{outline-offset:-2px}
+.message-row.checked{background:var(--panel)}
 .message-row.selected{background:var(--selected);box-shadow:inset 3px 0 var(--accent-ink)}
-.unread-dot{position:absolute;left:11px;top:18px;width:8px;height:8px;border-radius:50%;background:var(--accent-ink)}
+.row-checkbox{width:28px;align-self:stretch}
+.row-open{position:relative;flex:1;min-width:0;align-self:stretch;text-align:left;padding:11px 3px 11px 13px;touch-action:pan-y;user-select:none;-webkit-touch-callout:none}
+.row-open:focus-visible{outline-offset:-2px}
+.unread-dot{position:absolute;left:3px;top:19px;width:6px;height:6px;border-radius:50%;background:var(--accent-ink)}
 .row-top{display:flex;align-items:center;gap:8px}
 .row-sender{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--text-2)}
 .row-top time{font-size:0.75rem;color:var(--text-3);white-space:nowrap}
-.row-star{color:var(--star);flex-shrink:0}
+.row-actions{align-self:flex-start;display:flex;gap:0;padding-top:7px}
+.row-actions .button{padding:5px;color:var(--text-3)}
 .row-top .account-mark{width:8px;height:8px;border-radius:2px}
-.row-subject{font-size:0.8125rem;margin-top:2px;color:var(--text-2);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.row-preview{font-size:0.8125rem;margin-top:2px;color:var(--text-3);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.row-subject,.row-preview{display:block;font-size:0.8125rem;margin-top:2px;color:var(--text-2);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.row-preview{color:var(--text-3)}
 .unread .row-sender{font-weight:650;color:var(--text)}
 .unread .row-subject{font-weight:600;color:var(--text)}
+
+.message-context-menu{position:fixed;inset:auto;margin:0;z-index:45;width:244px;max-width:calc(100% - 16px);max-height:calc(100% - 16px);overflow:auto;overscroll-behavior:contain;padding:5px;border:1px solid var(--line-strong);border-radius:9px;background:var(--surface);color:var(--text);box-shadow:0 12px 36px var(--shadow)}
+.message-context-menu::backdrop{background:transparent}
+.message-context-menu [role=menuitem]{display:flex;align-items:center;gap:9px;width:100%;padding:6px 9px;min-height:30px;border-radius:5px;font-size:0.8125rem;text-align:left;text-decoration:none}
+.message-context-menu [role=menuitem]:hover:not(:disabled),.message-context-menu [role=menuitem]:focus-visible{background:var(--hover-strong)}
+.message-context-menu [role=menuitem] svg{width:15px;height:15px;flex-shrink:0;color:var(--text-2)}
+.message-context-menu [role=menuitem] span{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.message-menu-group{padding-top:4px;margin-top:4px;border-top:1px solid var(--line)}
+.message-menu-quick{display:grid;grid-template-columns:repeat(5,1fr);gap:2px}
+.message-menu-quick [role=menuitem]{justify-content:center;height:34px}
 
 /* Reader: the toolbar and head stay put, only the body scrolls */
 .reader{flex:1;min-width:0;display:flex;flex-direction:column;container-type:inline-size;container-name:reader}
@@ -471,6 +506,9 @@ legend{font-size:0.8125rem;padding:0 6px;color:var(--text-2)}
   input:not([type="checkbox"]):not([type="radio"]),select,textarea{font-size:max(1rem,1em)}
   .button,.mail-actions-items>button,.move-menu-items button,.link-button{min-block-size:44px}
   .mail-more,.sidebar-label button,.password-field button{min-width:44px;min-height:44px}
+  .row-checkbox{width:36px}
+  .row-actions .button,.message-context-menu [role=menuitem]{min-width:36px;min-height:44px}
+  .selection-actions .button{min-width:32px}
 }
 
 @media (prefers-reduced-motion: no-preference){
@@ -492,7 +530,7 @@ legend{font-size:0.8125rem;padding:0 6px;color:var(--text-2)}
   .button,.modal,.move-menu-list[popover],.mail-actions-menu[popover],.notice[popover="manual"],.main-nav button.active,.folder-list button.active,.raw-mail-source,.copy-tip{border:1px solid ButtonBorder}
   .copy-tip{background:Canvas;color:CanvasText}
   .button-primary{background:Highlight;color:HighlightText;border-color:Highlight}
-  .message-row.selected{outline:2px solid Highlight;outline-offset:-2px}
+  .message-row.selected,.message-row.checked,.quick-filter-options .button[aria-pressed=true]{outline:2px solid Highlight;outline-offset:-2px}
   .settings-switch input{background:ButtonFace;border:1px solid ButtonBorder}
   .settings-switch input::before{background:ButtonText}
   .settings-switch input:checked{background:Highlight;border-color:Highlight}

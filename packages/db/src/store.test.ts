@@ -25,6 +25,40 @@ describe('SQLite mail store', () => {
     expect(store.list(query('报销')).messages[0].cached).toBe(true);
     expect(store.message(message.id)?.preview).toContain('报销');
   });
+  it('applies read and star filters to totals and pages, including duplicate provider locations', () => {
+    const { inbox, sent } = seedAccount(store);
+    store.applyBatch(inbox, [
+      record(1, { flags: ['\\Flagged'], subject: '合同甲' }),
+      record(2, { flags: ['\\Flagged'], subject: '合同乙' }),
+      record(3, { flags: ['\\Flagged'], subject: '合同丙', remoteId: 'duplicate' }),
+      record(4, { subject: '合同丁' }),
+    ]);
+    store.applyBatch(sent, [record(7, { remoteId: 'duplicate', flags: ['\\Seen'], subject: '合同丙' })]);
+    const filters = { folderId: inbox.id, q: '合同', read: 'unread', starred: '1', limit: 1 };
+    const first = store.list(listSchema.parse(filters));
+    expect(first).toMatchObject({ total: 2, nextOffset: 1, messages: [{ subject: '合同乙', seen: false, starred: true }] });
+    expect(store.list(listSchema.parse({ ...filters, offset: 1 }))).toMatchObject({ total: 2, nextOffset: null, messages: [{ subject: '合同甲' }] });
+    expect(store.list(listSchema.parse({ ...filters, read: 'read' })).messages[0]).toMatchObject({ subject: '合同丙', folderIds: expect.arrayContaining([inbox.id, sent.id]) });
+  });
+  it('lists synced custom tags per account and matches any selected tag before pagination', () => {
+    const first = seedAccount(store);
+    const second = seedAccount(store, 'second@example.com');
+    store.applyBatch(first.inbox, [
+      record(1, { subject: '合同甲', flags: ['\\Flagged', '$Junk', 'Work'] }),
+      record(2, { subject: '合同乙', flags: ['work', '\\Seen'] }),
+      record(3, { subject: '合同丙', flags: ['$label1', '\\Flagged'] }),
+    ]);
+    store.applyBatch(second.inbox, [record(4, { subject: '合同丁', flags: ['Work', '\\Flagged'] })]);
+    expect(store.messageTags(first.accountId)).toEqual([
+      { accountId: first.accountId, keyword: '$label1', label: '$label1' },
+      { accountId: first.accountId, keyword: 'work', label: 'Work' },
+    ]);
+    expect(store.messageTags()).toHaveLength(3);
+    const filters = { tags: [first.accountId + ':WORK', first.accountId + ':$label1'], q: '合同', starred: '1', read: 'unread', limit: 1 };
+    expect(store.list(listSchema.parse(filters))).toMatchObject({ total: 2, nextOffset: 1, messages: [{ subject: '合同丙' }] });
+    expect(store.list(listSchema.parse({ ...filters, offset: 1 }))).toMatchObject({ total: 2, nextOffset: null, messages: [{ subject: '合同甲' }] });
+    expect(store.list(listSchema.parse({ tags: [second.accountId + ':work'] })).messages.map(mail => mail.subject)).toEqual(['合同丁']);
+  });
   it('deduplicates provider IDs across folders and keeps other labels when one location disappears', () => {
     const { inbox, sent } = seedAccount(store);
     store.applyBatch(inbox, [record(1, { remoteId: 'gmail-123' })]);

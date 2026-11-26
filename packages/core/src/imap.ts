@@ -345,7 +345,11 @@ function folderRole(path: string, specialUse?: string): FolderRole {
   if (path.toUpperCase() === 'INBOX') return 'inbox';
   const roles: Record<string, FolderRole> = { '\\Sent': 'sent', '\\Drafts': 'drafts', '\\Trash': 'trash', '\\Junk': 'junk', '\\Archive': 'archive', '\\All': 'archive' };
   if (specialUse && roles[specialUse]) return roles[specialUse];
-  const names: Record<string, FolderRole> = { sent: 'sent', 'sent items': 'sent', 'sent messages': 'sent', drafts: 'drafts', trash: 'trash', deleted: 'trash', 'deleted items': 'trash', junk: 'junk', spam: 'junk', archive: 'archive', '已发送': 'sent', '已删除': 'trash', '草稿箱': 'drafts' };
+  const names: Record<string, FolderRole> = {
+    sent: 'sent', 'sent items': 'sent', 'sent messages': 'sent', drafts: 'drafts', trash: 'trash',
+    deleted: 'trash', 'deleted items': 'trash', junk: 'junk', 'junk email': 'junk', spam: 'junk',
+    archive: 'archive', '已发送': 'sent', '已删除': 'trash', '草稿箱': 'drafts', '垃圾邮件': 'junk', '垃圾箱': 'junk',
+  };
   return names[path.toLowerCase()] ?? 'other';
 }
 

@@ -9,7 +9,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { streamSSE } from 'hono/streaming';
 import { bodyLimit } from 'hono/body-limit';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { accountSchema, accountUpdateSchema, composeSchema, discoverySchema, draftSchema, flagsSchema, listSchema, loginSchema, MAX_ATTACHMENT_BYTES, moveSchema, RAW_PREVIEW_BYTES, sendSchema, type RawMessage, type SyncEvent } from '@mail/shared';
+import { accountSchema, accountUpdateSchema, composeSchema, discoverySchema, draftSchema, flagsSchema, listSchema, loginSchema, MAX_ATTACHMENT_BYTES, messageBatchSchema, moveSchema, RAW_PREVIEW_BYTES, sendSchema, type RawMessage, type SyncEvent } from '@mail/shared';
 import { discoverAccount, errorStatus, publicError, UserError, verifyPassword, type MailService } from '@mail/core';
 import { accountOrderSchema, createFolderSchema, globalProxySchema, updateSettingsSchema, oauthStartSchema, oauthProviderSchema, oauthClientUpdateSchema, oauthCallbackSchema } from '@mail/shared';
 import { createAccessPolicy } from './access';
@@ -228,14 +228,26 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     await service.deleteFolder(c.req.param('id'));
     return c.json({ ok: true });
   });
-  app.get('/api/messages', c => {
-    const parsed = listSchema.safeParse(c.req.query());
+  app.get('/api/message-tags', c => c.json(service.store.messageTags(c.req.query('accountId'))));
+  const messagePage = (c: Context, input: unknown) => {
+    const parsed = listSchema.safeParse(input);
     if (!parsed.success) return c.json({ error: '查询条件不正确' }, 400);
     return c.json(service.store.list(parsed.data));
+  };
+  app.get('/api/messages', c => messagePage(c, c.req.query()));
+  app.post('/api/messages/query', async c => messagePage(c, await readJson(c)));
+  app.post('/api/message-actions', async c => {
+    const parsed = messageBatchSchema.safeParse(await readJson(c));
+    if (!parsed.success) return c.json({ error: '批量操作参数不正确' }, 400);
+    return c.json(await service.actOnMessages(parsed.data.ids, parsed.data.action));
   });
   app.use('/api/messages/:id/*', async (c, next) => {
-    if (!service.store.message(c.req.param('id')!)) return c.json({ error: '邮件不存在' }, 404);
+    if (!service.store.hasMessage(c.req.param('id')!)) return c.json({ error: '邮件不存在' }, 404);
     await next();
+  });
+  app.get('/api/messages/:id', c => {
+    const message = service.store.message(c.req.param('id'));
+    return message ? c.json(message) : c.json({ error: '邮件不存在' }, 404);
   });
   app.get('/api/messages/:id/body', async c => c.json(await service.body(c.req.param('id'))));
   app.get('/api/messages/:id/raw', async c => {
@@ -270,7 +282,7 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
   app.post('/api/messages/:id/move', async c => {
     const parsed = moveSchema.safeParse(await readJson(c));
     if (!parsed.success) return c.json({ error: '文件夹参数不正确' }, 400);
-    await service.move(c.req.param('id'), parsed.data.folderId);
+    await service.move(c.req.param('id'), parsed.data.folderId, parsed.data.sourceFolderId);
     return c.json({ ok: true });
   });
   app.get('/api/messages/:id/attachments/:attachmentId', async c => {

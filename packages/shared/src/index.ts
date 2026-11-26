@@ -95,7 +95,18 @@ export type OAuthStarted = OAuthProgress & { authorizationUrl: string; redirectU
 
 export const loginSchema = z.object({ password: z.string().min(12, '密码至少 12 个字符').max(1024) });
 export const flagsSchema = z.object({ seen: z.boolean().optional(), starred: z.boolean().optional() });
-export const moveSchema = z.object({ folderId: z.string().min(1) });
+export const moveSchema = z.object({ folderId: z.string().min(1), sourceFolderId: z.string().min(1).optional() });
+const moveToRoleSchema = z.enum(['inbox', 'archive', 'junk', 'trash']);
+const messageActionSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('flags'), patch: flagsSchema }),
+  z.object({ type: z.literal('move'), target: z.union([z.object({ folderId: z.string().min(1) }), z.object({ role: moveToRoleSchema })]),
+    sourceFolderId: z.string().min(1).optional() }),
+]);
+export const MAX_BATCH_MESSAGES = 100;
+export const messageBatchSchema = z.object({ ids: z.array(z.uuid()).min(1).max(MAX_BATCH_MESSAGES), action: messageActionSchema });
+export type MessageAction = z.infer<typeof messageActionSchema>;
+export type MessageMoveRole = z.infer<typeof moveToRoleSchema>;
+export type MessageActionResult = { id: string; error?: string };
 export const createFolderSchema = z.object({
   name: z.string().trim().min(1).max(255).regex(/^[^\x00-\x1f\x7f]+$/, '文件夹名称不能包含控制字符'),
   parentId: z.uuid().optional(),
@@ -126,10 +137,14 @@ export const draftSchema = sendSchema.omit({ to: true, cc: true, bcc: true, draf
 export const composeSchema = z.object({ mode: z.enum(['reply', 'reply-all', 'forward']), includeAttachments: z.boolean().default(true),
   timeZone: z.string().max(100).default('UTC').refine(value => { try { new Intl.DateTimeFormat('zh-CN', { timeZone: value }); return true; } catch { return false; } }, '时区不正确') });
 export const discoverySchema = z.object({ email: z.email() });
+export const MAX_MESSAGE_TAG_FILTERS = 100;
 export const listSchema = z.object({
   accountId: z.string().optional(),
   folderId: z.string().optional(),
   view: z.enum(['inbox', 'all', 'starred']).default('inbox'),
+  read: z.enum(['read', 'unread']).optional(),
+  starred: z.literal('1').optional(),
+  tags: z.array(z.string().regex(/^[0-9a-f-]{36}:[^\\\x00-\x1f\x7f]{1,255}$/i)).max(MAX_MESSAGE_TAG_FILTERS).optional(),
   q: z.string().trim().max(500).default(''),
   offset: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -152,6 +167,7 @@ export type DraftSummary = Pick<Draft, 'id' | 'accountId' | 'to' | 'subject' | '
 export type UnreadCounts = { inbox: number; all: number; starred: number; drafts: number; accounts: Record<string, number>; folders: Record<string, number> };
 export type AutoConfig = { name: string; source: 'ispdb'; imap: AccountSettings['imap']; smtp: AccountSettings['smtp']; requiresOAuth: boolean; sentCopy: AccountInput['sentCopy'] };
 export type ListInput = z.infer<typeof listSchema>;
+export type MessageTag = { accountId: string; keyword: string; label: string };
 export type FlagUpdate = z.infer<typeof flagsSchema>;
 export type FolderRole = 'inbox' | 'sent' | 'drafts' | 'trash' | 'junk' | 'archive' | 'other';
 export type Address = { name: string; address: string };
@@ -181,6 +197,7 @@ export type Message = Omit<MailMetadata, 'uid' | 'remoteId' | 'providerThreadId'
   seen: boolean;
   starred: boolean;
   cached: boolean;
+  folderIds?: string[];
 };
 export const RAW_PREVIEW_BYTES = 512 * 1024;
 export type Attachment = { id: string; filename: string; mimeType: string; size: number; contentId?: string };
@@ -188,7 +205,8 @@ export type InlineImage = { attachmentId: string; contentId: string; dataUrl: st
 export type MessageBody = { text: string; html: string | null; attachments: Attachment[]; inlineImages?: InlineImage[]; cc?: Address[] };
 export type RawMessage = { content: string; size: number; truncated: boolean };
 export type MessagePage = { messages: Message[]; total: number; nextOffset: number | null };
-export type SyncEvent = { type: 'settings' } | { type: 'sync' | 'change' | 'draft'; accountId: string; messageId?: string; contentOnly?: boolean; state?: 'running' | 'idle' | 'error'; error?: string };
+export type NewMailEvent = { type: 'new-mail'; accountId: string; messageIds: string[] };
+export type SyncEvent = { type: 'settings' } | NewMailEvent | { type: 'sync' | 'change' | 'draft'; accountId: string; messageId?: string; contentOnly?: boolean; state?: 'running' | 'idle' | 'error'; error?: string };
 export type BuildInfo = { version: string; revision: string | null; localChanges: boolean | null; builtAt: string };
 export const updateSettingsSchema = z.object({
   enabled: z.boolean(), useGlobalProxy: z.boolean(),
