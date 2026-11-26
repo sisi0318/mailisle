@@ -113,6 +113,7 @@ export const createFolderSchema = z.object({
 });
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_ATTACHMENTS = 20;
+export const INLINE_IMAGE_MIME = /^image\/(png|jpeg|gif|webp)$/i;
 export const uploadMetadataSchema = z.object({
   filename: z.string().min(1).max(255).refine(value => !/[\r\n\0]/.test(value), '文件名不能包含控制字符'),
   mimeType: z.string().max(255).regex(/^[\w.+-]+\/[\w.+-]+$/),
@@ -171,9 +172,10 @@ export type MessageTag = { accountId: string; keyword: string; label: string };
 export type FlagUpdate = z.infer<typeof flagsSchema>;
 export type FolderRole = 'inbox' | 'sent' | 'drafts' | 'trash' | 'junk' | 'archive' | 'other';
 export type Address = { name: string; address: string };
+export type ContactSuggestion = { name: string; address: string };
 export type Account = { id: string; name: string; email: string; lastSync: number | null; error: string | null; receiveEnabled: boolean; sendEnabled: boolean };
 export type Cursor = { uidValidity: string; uidNext: number; modseq: string | null };
-export type Folder = Cursor & { id: string; accountId: string; path: string; name: string; role: FolderRole; delimiter?: string | null };
+export type Folder = Cursor & { id: string; accountId: string; path: string; name: string; role: FolderRole; delimiter?: string | null; syncComplete?: boolean };
 export type MailMetadata = {
   uid: number;
   remoteId: string | null;

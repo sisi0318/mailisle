@@ -4,7 +4,7 @@ import { and, eq, getTableColumns, inArray, lt, sql } from 'drizzle-orm';
 import { mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Account, Cursor, DraftInput, DraftSummary, FlagUpdate, Folder, FolderRole, ListInput, MailFlags, MailMetadata, Message, MessagePage, MessageTag, MoveReceipt, UnreadCounts, Upload } from '@mail/shared';
+import type { Account, ContactSuggestion, Cursor, DraftInput, DraftSummary, FlagUpdate, Folder, FolderRole, ListInput, MailFlags, MailMetadata, Message, MessagePage, MessageTag, MoveReceipt, UnreadCounts, Upload } from '@mail/shared';
 import * as schema from './schema';
 import { previewText, SEARCH_INDEX_VERSION, searchExpression, tokenize } from './search';
 
@@ -279,6 +279,44 @@ export class MailStore {
       GROUP BY combinations.account_id, lower(tag.value)
       ORDER BY lower(tag.value)
     `);
+  }
+  /** Suggests recent recipients and senders from local messages and configured accounts. */
+  contacts(query = '', limit = 12): ContactSuggestion[] {
+    const needle = query.trim().toLowerCase();
+    const capped = Math.min(Math.max(limit, 1), 30);
+    const seen = new Map<string, { name: string; address: string; count: number; lastDate: number }>();
+    const add = (name: string, address: string, date: number) => {
+      const cleanAddress = address.trim();
+      if (!cleanAddress || !cleanAddress.includes('@')) return;
+      const key = cleanAddress.toLowerCase();
+      const cleanName = name.trim();
+      const existing = seen.get(key);
+      if (existing) {
+        existing.count++;
+        if (date > existing.lastDate) existing.lastDate = date;
+        if (!existing.name && cleanName) existing.name = cleanName;
+      } else {
+        seen.set(key, { name: cleanName, address: cleanAddress, count: 1, lastDate: date });
+      }
+    };
+    const recent = this.db.select({ from: schema.messages.from, to: schema.messages.to, replyTo: schema.messages.replyTo, date: schema.messages.date })
+      .from(schema.messages).orderBy(sql`date DESC`).limit(500).all();
+    for (const row of recent) {
+      for (const item of [...row.to, ...row.from, ...row.replyTo]) add(item.name, item.address, row.date);
+    }
+    for (const account of this.accounts()) add(account.name, account.email, 0);
+    const matched = [...seen.values()].filter(entry =>
+      !needle || entry.address.toLowerCase().includes(needle) || entry.name.toLowerCase().includes(needle),
+    );
+    matched.sort((a, b) => {
+      if (needle) {
+        const aStarts = a.address.toLowerCase().startsWith(needle) || a.name.toLowerCase().startsWith(needle) ? 1 : 0;
+        const bStarts = b.address.toLowerCase().startsWith(needle) || b.name.toLowerCase().startsWith(needle) ? 1 : 0;
+        if (aStarts !== bStarts) return bStarts - aStarts;
+      }
+      return b.count - a.count || b.lastDate - a.lastDate || a.address.localeCompare(b.address);
+    });
+    return matched.slice(0, capped).map(({ name, address }) => ({ name, address }));
   }
   list(input: ListInput): MessagePage {
     const conditions = [];

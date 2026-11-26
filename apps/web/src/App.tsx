@@ -99,6 +99,7 @@ function Mailbox({ locked, openedNotification, consumeNotification, onLogout }: 
   const [accountForm, setAccountForm] = useState<{ id?: string } | null>(null);
   const [accountManager, setAccountManager] = useState(false);
   const [composer, setComposer] = useState<{ draft?: Draft; accountId?: string; fresh?: boolean } | null>(null);
+  const [composerMinimized, setComposerMinimized] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [globalSettings, setGlobalSettings] = useState(false);
   const [versionDialog, setVersionDialog] = useState(false);
@@ -155,7 +156,8 @@ function Mailbox({ locked, openedNotification, consumeNotification, onLogout }: 
 
   /** Opens the composer unless one is already open, so a slow answer cannot replace a message being typed. */
   function openComposer(next: NonNullable<typeof composer>, otherwise: string) {
-    if (composerOpen.current) setNotice({ text: otherwise, kind: 'success' }); else setComposer(next);
+    if (composerOpen.current) setNotice({ text: otherwise, kind: 'success' });
+    else { setComposerMinimized(false); setComposer(next); }
   }
 
   useEffect(() => {
@@ -166,7 +168,7 @@ function Mailbox({ locked, openedNotification, consumeNotification, onLogout }: 
     return () => clearTimeout(timer);
   }, [search, searchTerm]);
 
-  const modalOpen = locked || mobileNav || !!accountManager || !!accountForm || globalSettings || versionDialog || !!deletingFolder || !!creatingFolder || !!composer || !!deletingDraftId || !!rawMessage;
+  const modalOpen = locked || mobileNav || !!accountManager || !!accountForm || globalSettings || versionDialog || !!deletingFolder || !!creatingFolder || (!!composer && !composerMinimized) || !!deletingDraftId || !!rawMessage;
   useEffect(() => { setNoticePaused(false); }, [notice]);
   useEffect(() => {
     const el = noticeRef.current;
@@ -391,14 +393,14 @@ function Mailbox({ locked, openedNotification, consumeNotification, onLogout }: 
   useEffect(() => {
     const keys = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
-      if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || document.querySelector('[role="dialog"], [role="alertdialog"], dialog[open], [popover]:popover-open')) return;
+      if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || document.querySelector('[role="dialog"], [role="alertdialog"], dialog[open], [popover]:not(.notice):popover-open')) return;
       if (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
       const open = !isDrafts && selectedMessage;
       const index = open ? rows.findIndex(message => message.id === open.id) : -1;
       const act: Record<string, (() => void) | false | null | undefined> = {
         Escape: open && closeReader,
         '/': !isDrafts && (() => searchBox.current?.focus()),
-        c: canSend && (() => setComposer(current => current ?? { accountId: filter.accountId })),
+        c: canSend && (() => { setComposerMinimized(false); setComposer(current => current ?? { accountId: filter.accountId }); }),
         r: open && !replying && (() => reply({ messageId: open.id, mode: 'reply', includeAttachments: true })),
         a: open && !replying && (() => reply({ messageId: open.id, mode: 'reply-all', includeAttachments: true })),
         f: open && !replying && (() => reply({ messageId: open.id, mode: 'forward', includeAttachments: true })),
@@ -434,7 +436,7 @@ function Mailbox({ locked, openedNotification, consumeNotification, onLogout }: 
     expandedAccountId, onToggleAccount: toggleAccount,
     onNavigate: navigate, onClose: () => setMobileNav(false),
     onManageAccounts: () => { setMobileNav(false); setAccountManager(true); },
-    onCompose: () => { setMobileNav(false); setComposer({ accountId: filter.accountId }); },
+    onCompose: () => { setMobileNav(false); setComposerMinimized(false); setComposer(current => current ?? { accountId: filter.accountId }); },
     onAddAccount: () => { setMobileNav(false); setAccountForm({}); },
     onGlobalSettings: () => { setMobileNav(false); setGlobalSettings(true); },
     onVersion: () => { setMobileNav(false); setVersionDialog(true); },
@@ -526,7 +528,9 @@ function Mailbox({ locked, openedNotification, consumeNotification, onLogout }: 
       if (folder) navigate({ view: 'all', accountId: folder.accountId, folderId: folder.id });
       setNotice({ text: '文件夹已创建', kind: 'success' });
     }} /></Suspense>}
-    {composer && <Suspense fallback={null}><Composer key={composer.draft?.id ?? 'new'} accounts={accountList} draft={composer.draft} accountId={composer.accountId} fresh={composer.fresh} onClose={() => setComposer(null)}
+    {composer && <Suspense fallback={null}><Composer key={composer.draft?.id ?? 'new'} accounts={accountList} draft={composer.draft} accountId={composer.accountId} fresh={composer.fresh}
+      minimized={composerMinimized} onMinimizedChange={setComposerMinimized}
+      onClose={() => { setComposer(null); setComposerMinimized(false); }}
       onSent={(text, needsAttention) => setNotice({ text, kind: needsAttention ? 'error' : 'success' })} /></Suspense>}
   </div>;
 }

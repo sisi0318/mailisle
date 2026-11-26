@@ -33,3 +33,17 @@ it('formats quote dates in the requesting browser timezone', () => {
   const draft = composeDraft(message, body, [], 'reply', accounts, 'Asia/Shanghai');
   expect(draft.text).toContain('GMT+8'); expect(draft.text).toContain('8:00:00');
 });
+it('preserves safe rich HTML formatting and mapped inline images when forwarding', () => {
+  const richBody: MessageBody = {
+    text: '项目汇总',
+    html: '<p><strong>项目汇总</strong></p><table><tr><th>模块</th><th>状态</th></tr><tr><td>写信</td><td>完成</td></tr></table><img src="cid:chart" alt="图表"><img src="https://tracker.invalid/px.png">',
+    attachments: [],
+  };
+  const inlineUrls = new Map([['chart', '/api/uploads/11111111-1111-4111-8111-111111111111?inline=1']]);
+  const draft = composeDraft(message, richBody, [], 'forward', accounts, 'UTC', inlineUrls);
+  expect(draft.html).toContain('转发的邮件');
+  expect(draft.html).toContain('<table>');
+  expect(draft.html).toContain('/api/uploads/11111111-1111-4111-8111-111111111111?inline=1');
+  expect(draft.html).not.toContain('tracker.invalid');
+  expect(draft.html).not.toContain('<blockquote>');
+});

@@ -228,4 +228,31 @@ describe('HTTP authentication and local data', () => {
     expect(store.folder(inbox.id)).toBeDefined();
     expect((await request('/folders/missing', 'DELETE', undefined, cookie)).status).toBe(404);
   });
+
+  it('serves raster image uploads inline when requested, keeps non-images as attachments, and suggests contacts', async () => {
+    const { inbox } = seedAccount(store);
+    store.applyBatch(inbox, [
+      record(1, { from: [{ name: '王小明', address: 'ming@example.com' }], to: [{ name: '李华', address: 'hua@example.com' }] }),
+    ]);
+    expect((await request('/contacts?q=ming')).status).toBe(401);
+    const cookie = await login();
+
+    const contactsRes = await request('/contacts?q=ming', 'GET', undefined, cookie);
+    expect(contactsRes.status).toBe(200);
+    expect(await contactsRes.json()).toEqual([{ name: '王小明', address: 'ming@example.com' }]);
+
+    const pngBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l5kAAAAASUVORK5CYII=', 'base64');
+    const pngForm = new FormData(); pngForm.set('file', new File([pngBytes], 'shot.png', { type: 'image/png' }));
+    const pngUpload = await (await app.request('http://127.0.0.1:3000/api/uploads', { method: 'POST', headers: { origin: 'http://127.0.0.1:3000', cookie }, body: pngForm })).json();
+
+    const inlineImg = await request(`/uploads/${pngUpload.id}?inline=1`, 'GET', undefined, cookie);
+    expect(inlineImg.headers.get('content-type')).toBe('image/png');
+    expect(inlineImg.headers.get('content-disposition')).toBe('inline');
+
+    const htmlForm = new FormData(); htmlForm.set('file', new File(['<script>alert(1)</script>'], 'evil.html', { type: 'text/html' }));
+    const htmlUpload = await (await app.request('http://127.0.0.1:3000/api/uploads', { method: 'POST', headers: { origin: 'http://127.0.0.1:3000', cookie }, body: htmlForm })).json();
+    const forcedDownload = await request(`/uploads/${htmlUpload.id}?inline=1`, 'GET', undefined, cookie);
+    expect(forcedDownload.headers.get('content-type')).toBe('application/octet-stream');
+    expect(forcedDownload.headers.get('content-disposition')).toMatch(/^attachment;/);
+  });
 });

@@ -10,6 +10,7 @@ import type { Address, FlagUpdate, Folder, FolderRole, MailMetadata, SendInput }
 import type { MailAdapter, SyncSink } from './adapter';
 import type { OutgoingAttachment } from './uploads';
 import type { AccountConfig } from './oauth';
+import { htmlToPlainText, renderOutgoingHtml } from './mail-render';
 
 export class ImapAdapter implements MailAdapter {
   private client: ImapFlow;
@@ -198,11 +199,18 @@ export class ImapAdapter implements MailAdapter {
     }
   }
   async send(input: SendInput, sentPath?: string, attachments: OutgoingAttachment[] = []) {
+    const renderedHtml = input.html?.trim() ? renderOutgoingHtml(input.html) : undefined;
+    // Derive structured plain text (preserving list items, blockquote `> ` markers, and links) when sending rich HTML.
+    const plainText = renderedHtml ? (htmlToPlainText(input.html!) || input.text) : input.text;
     const message = new MailComposer({
       from: { name: this.account.name, address: this.account.email }, to: input.to, cc: input.cc,
-      subject: input.subject, text: input.text, html: input.html,
+      subject: input.subject, text: plainText, html: renderedHtml,
       inReplyTo: input.inReplyTo, references: input.references, disableFileAccess: true, disableUrlAccess: true,
-      attachments: attachments.map(file => ({ filename: file.filename, content: file.content, contentType: file.mimeType })),
+      attachments: attachments.map(file => ({
+        filename: file.filename, content: file.content, contentType: file.mimeType,
+        ...(file.cid ? { cid: file.cid } : {}),
+        contentDisposition: file.inline ? 'inline' : 'attachment',
+      })),
     }).compile();
     const raw = await message.build();
     const transport = await this.smtp();
@@ -218,7 +226,10 @@ export class ImapAdapter implements MailAdapter {
           if (!sentPath) throw new Error('没有可用的已发送文件夹');
           await this.connect(); await this.client.append(sentPath, raw, ['\\Seen']);
         }
-        catch { warnings.push('邮件已发送，但保存已发送副本失败。请勿重复发送。'); }
+        catch (error) {
+          console.warn('保存已发送副本失败', (error as { code?: unknown; name?: string })?.code ?? (error as Error)?.name ?? 'Error');
+          warnings.push('邮件已发送，但保存已发送副本失败。请勿重复发送。');
+        }
       }
       return { messageId: result.messageId, ...(warnings.length ? { warning: warnings.join(' ') } : {}) };
     } catch (error) { throw this.smtpError(error); }

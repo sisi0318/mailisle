@@ -9,7 +9,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { streamSSE } from 'hono/streaming';
 import { bodyLimit } from 'hono/body-limit';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { accountSchema, accountUpdateSchema, composeSchema, discoverySchema, draftSchema, flagsSchema, listSchema, loginSchema, MAX_ATTACHMENT_BYTES, messageBatchSchema, moveSchema, RAW_PREVIEW_BYTES, sendSchema, type RawMessage, type SyncEvent } from '@mail/shared';
+import { accountSchema, accountUpdateSchema, composeSchema, discoverySchema, draftSchema, flagsSchema, INLINE_IMAGE_MIME, listSchema, loginSchema, MAX_ATTACHMENT_BYTES, messageBatchSchema, moveSchema, RAW_PREVIEW_BYTES, sendSchema, type RawMessage, type SyncEvent } from '@mail/shared';
 import { discoverAccount, errorStatus, publicError, UserError, verifyPassword, type MailService } from '@mail/core';
 import { accountOrderSchema, createFolderSchema, globalProxySchema, updateSettingsSchema, oauthStartSchema, oauthProviderSchema, oauthClientUpdateSchema, oauthCallbackSchema } from '@mail/shared';
 import { createAccessPolicy } from './access';
@@ -167,9 +167,19 @@ export function createApp({ service, passwordHash, port, webRoot, docsRoot = res
     if (!service.store.upload(c.req.param('id'))) return c.json({ error: '附件不存在' }, 404);
     if (!service.uploads) return c.json({ error: '附件存储未配置' }, 503);
     const [file] = await service.uploads.attachments([c.req.param('id')]);
-    c.header('Content-Type', 'application/octet-stream');
-    c.header('Content-Disposition', `attachment; filename="attachment"; filename*=UTF-8''${encodeURIComponent(file.filename).replace(/'/g, '%27')}`);
+    const inlineRequested = c.req.query('inline') === '1' && INLINE_IMAGE_MIME.test(file.mimeType);
+    if (inlineRequested) {
+      c.header('Content-Type', file.mimeType.toLowerCase());
+      c.header('Content-Disposition', 'inline');
+    } else {
+      c.header('Content-Type', 'application/octet-stream');
+      c.header('Content-Disposition', `attachment; filename="attachment"; filename*=UTF-8''${encodeURIComponent(file.filename).replace(/'/g, '%27')}`);
+    }
     return c.body(view(file.content));
+  });
+  app.get('/api/contacts', c => {
+    const q = (c.req.query('q') ?? '').slice(0, 200);
+    return c.json(service.store.contacts(q, 12));
   });
   app.get('/api/drafts', c => c.json(service.store.drafts(c.req.query('accountId'))));
   app.get('/api/drafts/:id', c => {

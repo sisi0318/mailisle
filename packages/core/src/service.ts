@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import type { MailStore } from '@mail/db';
-import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, type AccountSettings, type AccountUpdate, type AccountVerification, type ComposeMode, type Draft, type DraftInput, type FlagUpdate, type MessageAction, type MessageActionResult, type MessageBody, type SendInput, type SyncEvent } from '@mail/shared';
+import { INLINE_IMAGE_MIME, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, type AccountSettings, type AccountUpdate, type AccountVerification, type ComposeMode, type Draft, type DraftInput, type FlagUpdate, type MessageAction, type MessageActionResult, type MessageBody, type SendInput, type SyncEvent } from '@mail/shared';
 import type { MailAdapter } from './adapter';
 import { ImapAdapter } from './imap';
 import { Vault } from './crypto';
@@ -9,6 +9,7 @@ import { BodyCache } from './cache';
 import { BodyPrefetcher } from './body-prefetcher';
 import { UploadStore } from './uploads';
 import { composeDraft } from './compose';
+import { extractInlineUploadIds, rewriteInlineImagesToCid } from './mail-render';
 import { OAuthManager, type AccountConfig } from './oauth';
 import { OAuthFlow } from './oauth-flow';
 import { publicError, UserError } from './errors';
@@ -323,14 +324,30 @@ export class MailService {
   async send(input: SendInput) {
     const epoch = this.epoch(input.accountId);
     if (input.draftId && this.store.draft(input.draftId)?.accountId !== input.accountId) throw new Error('草稿不存在或发件人已改变，请先保存草稿');
-    const attachments = input.attachmentIds.length ? await this.requireUploads().attachments(input.attachmentIds) : [];
+    const inlineIds = input.html ? extractInlineUploadIds(input.html) : [];
+    const allAttachmentIds = [...new Set([...input.attachmentIds, ...inlineIds])];
+    if (allAttachmentIds.length > MAX_ATTACHMENTS) throw new UserError(`最多添加 ${MAX_ATTACHMENTS} 个附件`, 400);
+    const rawAttachments = allAttachmentIds.length ? await this.requireUploads().attachments(allAttachmentIds) : [];
+    const inlineSet = new Set(inlineIds);
+    const validInlineSet = new Set<string>();
+    const attachments = rawAttachments.map((file, index) => {
+      const normalizedId = allAttachmentIds[index]?.toLowerCase();
+      if (normalizedId && inlineSet.has(normalizedId) && INLINE_IMAGE_MIME.test(file.mimeType)) {
+        validInlineSet.add(normalizedId);
+        return { ...file, cid: `${normalizedId}@mailisle`, inline: true };
+      }
+      return file;
+    });
+    const outgoingInput: SendInput = input.html && validInlineSet.size
+      ? { ...input, html: rewriteInlineImagesToCid(input.html, validInlineSet), attachmentIds: allAttachmentIds }
+      : { ...input, attachmentIds: allAttachmentIds };
     const sent = this.store.folders(input.accountId).find(folder => folder.role === 'sent');
     this.assertEpoch(input.accountId, epoch);
-    const result = await this.withAdapter(input.accountId, adapter => adapter.send(input, sent?.path, attachments), 'send', 'send');
+    const result = await this.withAdapter(input.accountId, adapter => adapter.send(outgoingInput, sent?.path, attachments), 'send', 'send');
     if (!this.currentEpoch(input.accountId, epoch)) return { ...result, warning: [result.warning, '邮件已发送，邮箱设置已变更，请勿重复发送。'].filter(Boolean).join(' ') };
     try { if (input.draftId) await this.deleteDraft(input.draftId); }
     catch { result.warning = [result.warning, '邮件已发送，但清理草稿失败，请勿重复发送。'].filter(Boolean).join(' '); }
-    await this.cleanupUploads(input.attachmentIds);
+    await this.cleanupUploads(allAttachmentIds);
     void this.sync(input.accountId);
     return result;
   }
@@ -344,9 +361,12 @@ export class MailService {
     if (!this.store.account(input.accountId)) throw new Error('发件邮箱不存在');
     if (this.changingAccounts.has(input.accountId)) throw new Error('邮箱配置正在更新，请稍后保存草稿');
     const previous = id ? this.getDraft(id) : undefined;
-    if (input.attachmentIds.length) this.requireUploads().metadata(input.attachmentIds);
+    const inlineIds = input.html ? extractInlineUploadIds(input.html) : [];
+    const attachmentIds = [...new Set([...input.attachmentIds, ...inlineIds])];
+    if (attachmentIds.length > MAX_ATTACHMENTS) throw new UserError(`最多添加 ${MAX_ATTACHMENTS} 个附件`, 400);
+    if (attachmentIds.length) this.requireUploads().metadata(attachmentIds);
     id ??= randomUUID();
-    this.store.saveDraft(id, input);
+    this.store.saveDraft(id, { ...input, attachmentIds });
     await this.cleanupUploads(previous?.attachmentIds ?? []);
     this.emit({ type: 'draft', accountId: input.accountId });
     return this.getDraft(id);
@@ -366,15 +386,24 @@ export class MailService {
       if (!location) throw new Error('原邮件已不存在');
       cc = await this.withAdapter(message.accountId, adapter => adapter.copyRecipients(location.folder, location.uid));
     }
-    const draft = composeDraft(message, body, cc, mode, this.store.accounts(), timeZone);
+    const createdUploadIds: string[] = [];
+    const inlineUploadUrls = new Map<string, string>();
     try {
       if (mode === 'forward' && includeAttachments) {
         const files = body.attachments;
         if (files.length > MAX_ATTACHMENTS || files.reduce((size, file) => size + file.size, 0) > MAX_ATTACHMENT_BYTES) throw new Error('原邮件附件超过限制，请选择不带附件转发');
-        for (const file of files) draft.attachmentIds.push((await this.requireUploads().save(file.filename, file.mimeType, await this.cache.attachment(id, file.id))).id);
+        for (const file of files) {
+          const uploaded = await this.requireUploads().save(file.filename, file.mimeType, await this.cache.attachment(id, file.id));
+          createdUploadIds.push(uploaded.id);
+          if (file.contentId && INLINE_IMAGE_MIME.test(file.mimeType)) {
+            inlineUploadUrls.set(file.contentId.replace(/^<|>$/g, '').trim().toLowerCase(), `/api/uploads/${uploaded.id}?inline=1`);
+          }
+        }
       }
+      const draft = composeDraft(message, body, cc, mode, this.store.accounts(), timeZone, inlineUploadUrls.size ? inlineUploadUrls : undefined);
+      draft.attachmentIds.push(...createdUploadIds);
       return await this.saveDraft(undefined, draft);
-    } catch (error) { await this.cleanupUploads(draft.attachmentIds); throw error; }
+    } catch (error) { await this.cleanupUploads(createdUploadIds); throw error; }
   }
   /** One attachment with its bytes. Reads only that file, not the inline images a full body carries. */
   async attachment(messageId: string, attachmentId: string) {

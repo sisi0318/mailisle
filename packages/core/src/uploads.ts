@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { MailStore } from '@mail/db';
 import { MAX_ATTACHMENT_BYTES, uploadMetadataSchema, type Upload } from '@mail/shared';
 
-export type OutgoingAttachment = { filename: string; mimeType: string; content: Buffer };
+export type OutgoingAttachment = { filename: string; mimeType: string; content: Buffer; cid?: string; inline?: boolean };
 
 export class UploadStore {
   constructor(private store: MailStore, private directory: string) {}
